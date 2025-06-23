@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 )
 
@@ -67,7 +69,7 @@ func main() {
 	log.Printf("      - Robot Actions: meili/v2/Roboligent/{serial}/instantActions")
 	log.Printf("   💡 종료하려면 Ctrl+C를 누르세요")
 
-	// Status monitoring goroutine
+	// Status monitoring goroutine - 확장된 상태 정보 표시
 	go func() {
 		ticker := time.NewTicker(time.Duration(config.App.StatusIntervalSeconds) * time.Second)
 		defer ticker.Stop()
@@ -81,6 +83,9 @@ func main() {
 				registeredTargetRobots := robotManager.GetRegisteredTargetRobots()
 				missingTargetRobots := robotManager.GetMissingTargetRobots()
 				targetRobotCount := robotManager.GetTargetRobotCount()
+				executingRobots := robotManager.GetExecutingRobots()
+				robotsWithErrors := robotManager.GetRobotsWithErrors()
+				lowBatteryRobots := robotManager.GetLowBatteryRobots(25.0)
 
 				// Connection status
 				status := bridge.GetConnectionStatus()
@@ -89,7 +94,21 @@ func main() {
 				log.Printf("   MQTT 연결: %s", status)
 				log.Printf("   대상 로봇: %d대 (등록: %d대, 미등록: %d대)",
 					targetRobotCount, len(registeredTargetRobots), len(missingTargetRobots))
-				log.Printf("   로봇 현황 - 총: %d대, 온라인: %d대", len(allRobots), len(onlineRobots))
+				log.Printf("   로봇 현황 - 총: %d대, 온라인: %d대, 실행중: %d대",
+					len(allRobots), len(onlineRobots), len(executingRobots))
+
+				// Alert summary
+				alertCount := 0
+				if len(robotsWithErrors) > 0 {
+					alertCount += len(robotsWithErrors)
+				}
+				if len(lowBatteryRobots) > 0 {
+					alertCount += len(lowBatteryRobots)
+				}
+				if alertCount > 0 {
+					log.Printf("   🚨 알림: %d개 (에러: %d대, 배터리부족: %d대)",
+						alertCount, len(robotsWithErrors), len(lowBatteryRobots))
+				}
 
 				if len(missingTargetRobots) > 0 {
 					log.Printf("   ⚠️  미등록 대상 로봇: %v", missingTargetRobots)
@@ -110,9 +129,82 @@ func main() {
 							factsheetIcon = "📋"
 						}
 
-						log.Printf("     %s %s %s: %s (업데이트: %s)",
-							statusIcon, factsheetIcon, serialNumber, robot.ConnectionState,
+						// 추가 상태 아이콘들
+						orderIcon := ""
+						if robot.IsExecutingOrder {
+							if robot.IsDriving {
+								orderIcon = "🚛"
+							} else if robot.IsPaused {
+								orderIcon = "⏸️"
+							} else {
+								orderIcon = "📋"
+							}
+						}
+
+						batteryIcon := ""
+						if robot.BatteryLevel > 0 {
+							if robot.BatteryLevel < 20 {
+								batteryIcon = "🪫"
+							} else if robot.IsCharging {
+								batteryIcon = "🔌"
+							} else if robot.BatteryLevel < 50 {
+								batteryIcon = "🔋"
+							}
+						}
+
+						errorIcon := ""
+						if robot.LastError != nil || robot.HasSafetyIssue {
+							errorIcon = "🚨"
+						}
+
+						// 기본 정보
+						log.Printf("     %s %s%s%s%s %s: %s (업데이트: %s)",
+							statusIcon, factsheetIcon, orderIcon, batteryIcon, errorIcon,
+							serialNumber, robot.ConnectionState,
 							robot.LastUpdate.Format("15:04:05"))
+
+						// 상세 상태 정보 (온라인인 경우만)
+						if robot.ConnectionState == Online {
+							details := []string{}
+
+							if robot.IsExecutingOrder {
+								orderInfo := "Order: " + robot.CurrentOrderID[:8]
+								if robot.IsDriving {
+									orderInfo += " (이동중)"
+								} else if robot.IsPaused {
+									orderInfo += " (일시정지)"
+								}
+								details = append(details, orderInfo)
+							}
+
+							if robot.BatteryLevel > 0 {
+								batteryInfo := fmt.Sprintf("배터리: %.1f%%", robot.BatteryLevel)
+								if robot.IsCharging {
+									batteryInfo += " (충전중)"
+								}
+								details = append(details, batteryInfo)
+							}
+
+							if robot.CurrentPosition != nil {
+								posInfo := fmt.Sprintf("위치: (%.1f, %.1f)",
+									robot.CurrentPosition.X, robot.CurrentPosition.Y)
+								details = append(details, posInfo)
+							}
+
+							if len(robot.ActiveActions) > 0 {
+								actionInfo := fmt.Sprintf("액션: %d개", len(robot.ActiveActions))
+								details = append(details, actionInfo)
+							}
+
+							if robot.LastError != nil {
+								errorInfo := fmt.Sprintf("에러: %s", robot.LastError.ErrorType)
+								details = append(details, errorInfo)
+							}
+
+							if len(details) > 0 {
+								log.Printf("       └─ %s", strings.Join(details, " | "))
+							}
+						}
 					}
 				}
 
@@ -128,6 +220,27 @@ func main() {
 					log.Printf("   📋 대상 외 로봇 (%d대):", len(nonTargetRobots))
 					for serialNumber, robot := range nonTargetRobots {
 						log.Printf("     ℹ️  %s: %s", serialNumber, robot.ConnectionState)
+					}
+				}
+
+				// 상세 알림 표시
+				if len(robotsWithErrors) > 0 {
+					log.Printf("   🚨 에러 상태 로봇:")
+					for serialNumber, robot := range robotsWithErrors {
+						if robot.LastError != nil {
+							log.Printf("     - %s: %s (%s)",
+								serialNumber, robot.LastError.ErrorType, robot.LastError.ErrorDescription)
+						}
+						if robot.HasSafetyIssue {
+							log.Printf("     - %s: 안전 문제 발생", serialNumber)
+						}
+					}
+				}
+
+				if len(lowBatteryRobots) > 0 {
+					log.Printf("   🪫 배터리 부족 로봇:")
+					for serialNumber, robot := range lowBatteryRobots {
+						log.Printf("     - %s: %.1f%%", serialNumber, robot.BatteryLevel)
 					}
 				}
 

@@ -11,7 +11,7 @@ const (
 	Offline          ConnectionState = "OFFLINE"
 )
 
-// RobotConnectionMessage represents the MQTT message structure for robot connection status
+// RobotConnectionMessage represents the enhanced MQTT message structure for robot connection/state
 type RobotConnectionMessage struct {
 	HeaderID        int             `json:"headerId"`
 	Timestamp       string          `json:"timestamp"`
@@ -19,6 +19,103 @@ type RobotConnectionMessage struct {
 	Manufacturer    string          `json:"manufacturer"`
 	SerialNumber    string          `json:"serialNumber"`
 	ConnectionState ConnectionState `json:"connectionState"`
+
+	// Order 실행 상태 정보 (optional fields)
+	OrderID       string   `json:"orderId,omitempty"`
+	OrderUpdateID int      `json:"orderUpdateId,omitempty"`
+	LastNodeID    string   `json:"lastNodeId,omitempty"`
+	LastNodeSeqID int      `json:"lastNodeSequenceId,omitempty"`
+	Driving       *bool    `json:"driving,omitempty"`
+	Paused        *bool    `json:"paused,omitempty"`
+	OperatingMode string   `json:"operatingMode,omitempty"`
+	DistanceSince *float64 `json:"distanceSinceLastNode,omitempty"`
+
+	// 상태 배열들 (optional)
+	ActionStates []ActionState `json:"actionStates,omitempty"`
+	NodeStates   []NodeState   `json:"nodeStates,omitempty"`
+	EdgeStates   []EdgeState   `json:"edgeStates,omitempty"`
+	Errors       []ErrorInfo   `json:"errors,omitempty"`
+	Information  []InfoMessage `json:"information,omitempty"`
+
+	// 로봇 위치 및 상태 (optional)
+	AGVPosition    *AGVPosition  `json:"agvPosition,omitempty"`
+	BatteryState   *BatteryState `json:"batteryState,omitempty"`
+	SafetyState    *SafetyState  `json:"safetyState,omitempty"`
+	Velocity       *Velocity     `json:"velocity,omitempty"`
+	NewBaseRequest *bool         `json:"newBaseRequest,omitempty"`
+}
+
+// ActionState represents the state of an action being executed
+type ActionState struct {
+	ActionID          string `json:"actionId"`
+	ActionType        string `json:"actionType"`
+	ActionDescription string `json:"actionDescription"`
+	ActionStatus      string `json:"actionStatus"` // WAITING, RUNNING, FINISHED, FAILED, etc.
+	ResultDescription string `json:"resultDescription"`
+}
+
+// NodeState represents the state of a navigation node
+type NodeState struct {
+	NodeID       string       `json:"nodeId"`
+	SequenceID   int          `json:"sequenceId"`
+	Released     bool         `json:"released"`
+	NodePosition NodePosition `json:"nodePosition"`
+}
+
+// EdgeState represents the state of an edge between nodes
+type EdgeState struct {
+	EdgeID      string `json:"edgeId"`
+	SequenceID  int    `json:"sequenceId"`
+	Released    bool   `json:"released"`
+	StartNodeID string `json:"startNodeId,omitempty"`
+	EndNodeID   string `json:"endNodeId"`
+}
+
+// AGVPosition represents robot's current position
+type AGVPosition struct {
+	X                   float64 `json:"x"`
+	Y                   float64 `json:"y"`
+	Theta               float64 `json:"theta"`
+	MapID               string  `json:"mapId"`
+	MapDescription      string  `json:"mapDescription"`
+	PositionInitialized bool    `json:"positionInitialized"`
+	LocalizationScore   float64 `json:"localizationScore"`
+	DeviationRange      float64 `json:"deviationRange"`
+}
+
+// BatteryState represents robot's battery status
+type BatteryState struct {
+	BatteryCharge  float64 `json:"batteryCharge"`
+	BatteryVoltage float64 `json:"batteryVoltage"`
+	BatteryHealth  int     `json:"batteryHealth"`
+	Charging       bool    `json:"charging"`
+	Reach          int     `json:"reach"`
+}
+
+// SafetyState represents robot's safety status
+type SafetyState struct {
+	EStop          string `json:"eStop"` // NONE, AUTORELEASE, MANUAL
+	FieldViolation bool   `json:"fieldViolation"`
+}
+
+// Velocity represents robot's current velocity
+type Velocity struct {
+	VX    float64 `json:"vx"`
+	VY    float64 `json:"vy"`
+	Omega float64 `json:"omega"`
+}
+
+// ErrorInfo represents error information
+type ErrorInfo struct {
+	ErrorType        string `json:"errorType"`
+	ErrorDescription string `json:"errorDescription"`
+	ErrorLevel       string `json:"errorLevel"`
+}
+
+// InfoMessage represents information message
+type InfoMessage struct {
+	InfoType        string `json:"infoType"`
+	InfoDescription string `json:"infoDescription"`
 }
 
 // RobotStatus holds the current status of a robot
@@ -28,8 +125,29 @@ type RobotStatus struct {
 	ConnectionState ConnectionState `json:"connectionState"`
 	LastUpdate      time.Time       `json:"lastUpdate"`
 	LastHeaderID    int             `json:"lastHeaderId"`
-	HasFactsheet    bool            `json:"hasFactsheet"`    // factsheet 수신 여부
-	FactsheetUpdate time.Time       `json:"factsheetUpdate"` // factsheet 마지막 업데이트 시간
+	HasFactsheet    bool            `json:"hasFactsheet"`
+	FactsheetUpdate time.Time       `json:"factsheetUpdate"`
+
+	// Order 실행 상태
+	CurrentOrderID   string    `json:"currentOrderId,omitempty"`
+	OrderUpdateID    int       `json:"orderUpdateId,omitempty"`
+	OrderStartTime   time.Time `json:"orderStartTime,omitempty"`
+	LastStateUpdate  time.Time `json:"lastStateUpdate,omitempty"`
+	IsExecutingOrder bool      `json:"isExecutingOrder"`
+	IsDriving        bool      `json:"isDriving"`
+	IsPaused         bool      `json:"isPaused"`
+	OperatingMode    string    `json:"operatingMode,omitempty"`
+
+	// 위치 및 센서 정보
+	CurrentPosition *AGVPosition `json:"currentPosition,omitempty"`
+	BatteryLevel    float64      `json:"batteryLevel,omitempty"`
+	IsCharging      bool         `json:"isCharging"`
+
+	// 실행 중인 액션 및 에러
+	ActiveActions  []ActionState `json:"activeActions,omitempty"`
+	LastError      *ErrorInfo    `json:"lastError,omitempty"`
+	HasSafetyIssue bool          `json:"hasSafetyIssue"`
+	LastNodeID     string        `json:"lastNodeId,omitempty"`
 }
 
 // PLCActionMessage represents the message from PLC bridge/actions topic
@@ -55,8 +173,6 @@ type RobotActionMessage struct {
 	Nodes         []Node `json:"nodes,omitempty"`
 	Edges         []Edge `json:"edges,omitempty"`
 }
-
-// FactsheetRequestMessage is no longer needed - use RobotActionMessage instead
 
 // FactsheetResponseMessage represents the factsheet response from robot
 type FactsheetResponseMessage struct {

@@ -38,7 +38,7 @@ func (rm *RobotManager) SetStatusChangeCallback(callback StatusChangeCallback) {
 	rm.statusChangeCallback = callback
 }
 
-// UpdateRobotStatus updates the robot status based on received message
+// UpdateRobotStatus updates robot status from enhanced connection message
 func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
@@ -62,7 +62,7 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 		log.Printf("✅ 새로운 로봇 등록 - Serial: %s", serialNumber)
 	}
 
-	// Check if this is a newer message (prevent processing old messages)
+	// Check if this is a newer message
 	if robot.LastHeaderID > msg.HeaderID {
 		log.Printf("⚠️  이전 메시지 무시 - Robot: %s, Current HeaderID: %d, Received HeaderID: %d",
 			serialNumber, robot.LastHeaderID, msg.HeaderID)
@@ -71,15 +71,82 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 
 	// Store previous state for comparison
 	previousState := robot.ConnectionState
+	previousOrderID := robot.CurrentOrderID
 
-	// Update robot status
+	// Update basic connection info
 	robot.ConnectionState = msg.ConnectionState
 	robot.LastUpdate = time.Now()
 	robot.LastHeaderID = msg.HeaderID
 
-	// Log state change
+	// Update extended state if present
+	if msg.OrderID != "" {
+		robot.CurrentOrderID = msg.OrderID
+		robot.OrderUpdateID = msg.OrderUpdateID
+		robot.IsExecutingOrder = true
+		robot.LastStateUpdate = time.Now()
+
+		// Track order start time
+		if robot.CurrentOrderID != previousOrderID && robot.OrderStartTime.IsZero() {
+			robot.OrderStartTime = time.Now()
+		}
+	} else {
+		// No active order
+		if robot.IsExecutingOrder {
+			// Order just finished
+			robot.OrderStartTime = time.Time{}
+		}
+		robot.CurrentOrderID = ""
+		robot.IsExecutingOrder = false
+	}
+
+	// Update driving/paused state
+	if msg.Driving != nil {
+		robot.IsDriving = *msg.Driving
+	}
+	if msg.Paused != nil {
+		robot.IsPaused = *msg.Paused
+	}
+
+	// Update operating mode
+	if msg.OperatingMode != "" {
+		robot.OperatingMode = msg.OperatingMode
+	}
+
+	// Update position
+	if msg.AGVPosition != nil && msg.AGVPosition.PositionInitialized {
+		robot.CurrentPosition = msg.AGVPosition
+	}
+
+	// Update battery state
+	if msg.BatteryState != nil {
+		robot.BatteryLevel = msg.BatteryState.BatteryCharge
+		robot.IsCharging = msg.BatteryState.Charging
+	}
+
+	// Update active actions
+	if len(msg.ActionStates) > 0 {
+		robot.ActiveActions = msg.ActionStates
+	}
+
+	// Update safety status
+	robot.HasSafetyIssue = false
+	if msg.SafetyState != nil {
+		robot.HasSafetyIssue = msg.SafetyState.EStop != "NONE" || msg.SafetyState.FieldViolation
+	}
+
+	// Update last error
+	if len(msg.Errors) > 0 {
+		robot.LastError = &msg.Errors[0] // Store most recent error
+	}
+
+	// Update last node
+	if msg.LastNodeID != "" {
+		robot.LastNodeID = msg.LastNodeID
+	}
+
+	// Log state changes
 	if previousState != msg.ConnectionState {
-		log.Printf("🔄 로봇 상태 변경 - Serial: %s, %s -> %s",
+		log.Printf("🔄 로봇 연결 상태 변경 - Serial: %s, %s -> %s",
 			serialNumber, previousState, msg.ConnectionState)
 
 		// Call status change callback if set
@@ -217,4 +284,49 @@ func (rm *RobotManager) UpdateFactsheetReceived(serialNumber string) {
 		robot.FactsheetUpdate = time.Now()
 		log.Printf("📋 로봇 Factsheet 수신 완료 - Serial: %s", serialNumber)
 	}
+}
+
+// GetExecutingRobots returns robots currently executing orders
+func (rm *RobotManager) GetExecutingRobots() map[string]*RobotStatus {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]*RobotStatus)
+	for k, v := range rm.robots {
+		if v.IsExecutingOrder && rm.targetSerials[k] {
+			robotCopy := *v
+			result[k] = &robotCopy
+		}
+	}
+	return result
+}
+
+// GetRobotsWithErrors returns robots that have errors
+func (rm *RobotManager) GetRobotsWithErrors() map[string]*RobotStatus {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]*RobotStatus)
+	for k, v := range rm.robots {
+		if (v.LastError != nil || v.HasSafetyIssue) && rm.targetSerials[k] {
+			robotCopy := *v
+			result[k] = &robotCopy
+		}
+	}
+	return result
+}
+
+// GetLowBatteryRobots returns robots with low battery
+func (rm *RobotManager) GetLowBatteryRobots(threshold float64) map[string]*RobotStatus {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]*RobotStatus)
+	for k, v := range rm.robots {
+		if v.BatteryLevel > 0 && v.BatteryLevel < threshold && rm.targetSerials[k] {
+			robotCopy := *v
+			result[k] = &robotCopy
+		}
+	}
+	return result
 }

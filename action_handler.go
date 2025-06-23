@@ -84,6 +84,19 @@ func (ah *ActionHandler) createInferenceNodePosition() NodePosition {
 	}
 }
 
+// createTrajectoryNodePosition creates a specific position for trajectory actions
+// Based on actual system data, trajectory uses the same position as inference
+func (ah *ActionHandler) createTrajectoryNodePosition() NodePosition {
+	return NodePosition{
+		X:                     -4.16,
+		Y:                     -0.39,
+		Theta:                 3.1415927, // 180 degrees in radians
+		AllowedDeviationXY:    0.5,
+		AllowedDeviationTheta: 0.17453292, // 10 degrees in radians
+		MapID:                 "floor 0",
+	}
+}
+
 // ConvertPLCActionToRobotAction converts PLC action message to robot action message
 func (ah *ActionHandler) ConvertPLCActionToRobotAction(plcAction *PLCActionMessage, serialNumber string) (*RobotActionMessage, error) {
 	switch plcAction.Action {
@@ -166,7 +179,7 @@ func (ah *ActionHandler) createInferenceAction(serialNumber string, inferenceNam
 	// Create intermediate node (starting point)
 	intermediateNode := Node{
 		NodeID:       "intermediate_node_0_0",
-		Description:  "intermediate point 0 of task inference-delete-me_20250616_0003 subtask index 0 ",
+		Description:  fmt.Sprintf("intermediate point 0 of task inference-%s subtask index 0", inferenceName),
 		SequenceID:   0,
 		Released:     true,
 		NodePosition: ah.createBaseNodePosition(),
@@ -190,7 +203,7 @@ func (ah *ActionHandler) createInferenceAction(serialNumber string, inferenceNam
 	// Create inference node
 	inferenceNode := Node{
 		NodeID:       ah.generateActionID(),
-		Description:  "we are in 2 Subtask of inference-delete-me_20250616_0003 at index 0",
+		Description:  fmt.Sprintf("we are in 2 Subtask of inference-%s at index 0", inferenceName),
 		SequenceID:   2,
 		Released:     true,
 		NodePosition: ah.createInferenceNodePosition(),
@@ -218,7 +231,18 @@ func (ah *ActionHandler) createInferenceAction(serialNumber string, inferenceNam
 }
 
 // createTrajectoryAction creates a trajectory action for the robot
+// Updated to match the actual system behavior with intermediate nodes and specific position
 func (ah *ActionHandler) createTrajectoryAction(serialNumber string, trajectoryName string) *RobotActionMessage {
+	// Create intermediate node (starting point)
+	intermediateNode := Node{
+		NodeID:       "intermediate_node_0_0",
+		Description:  fmt.Sprintf("intermediate point 0 of task trajectory-%s subtask index 0", trajectoryName),
+		SequenceID:   0,
+		Released:     true,
+		NodePosition: ah.createBaseNodePosition(),
+		Actions:      []NodeAction{}, // Empty actions for intermediate node
+	}
+
 	// Create trajectory action
 	trajectoryAction := NodeAction{
 		ActionType:        "Roboligent Robin - Follow Trajectory",
@@ -228,7 +252,7 @@ func (ah *ActionHandler) createTrajectoryAction(serialNumber string, trajectoryN
 		ActionParameters: []ActionParameter{
 			{
 				Key:   "arm",
-				Value: "right|left", // Default arm configuration
+				Value: "right", // Default arm setting, matches actual system data
 			},
 			{
 				Key:   "trajectory_name",
@@ -237,22 +261,95 @@ func (ah *ActionHandler) createTrajectoryAction(serialNumber string, trajectoryN
 		},
 	}
 
-	// Create trajectory node
+	// Create trajectory execution node
+	// Updated to use specific position like inference (matches actual system behavior)
 	trajectoryNode := Node{
 		NodeID:       ah.generateActionID(),
-		Description:  "we are in 2 Subtask of inference-delete-me_20250616_0004 at index 0",
-		SequenceID:   0,
+		Description:  fmt.Sprintf("we are in 2 Subtask of trajectory-%s at index 0", trajectoryName),
+		SequenceID:   2, // Updated to match actual system (was 0)
 		Released:     true,
-		NodePosition: ah.createBaseNodePosition(),
+		NodePosition: ah.createTrajectoryNodePosition(), // Updated to use specific position
 		Actions:      []NodeAction{trajectoryAction},
+	}
+
+	// Create edge connecting the nodes
+	// Updated to include edge (was missing in original implementation)
+	edge := Edge{
+		EdgeID:      "intermediate_edge_0_0",
+		SequenceID:  1,
+		Released:    true,
+		StartNodeID: "intermediate_node_0_0",
+		EndNodeID:   trajectoryNode.NodeID,
+		Actions:     []NodeAction{}, // Empty actions for edge
 	}
 
 	// Create robot action message (order format)
 	robotAction := ah.createBaseRobotMessage(serialNumber, "Roboligent")
 	robotAction.OrderID = ah.generateOrderID()
 	robotAction.OrderUpdateID = 0
-	robotAction.Nodes = []Node{trajectoryNode}
-	robotAction.Edges = []Edge{} // Empty edges array
+	robotAction.Nodes = []Node{intermediateNode, trajectoryNode} // Updated to include both nodes
+	robotAction.Edges = []Edge{edge}                             // Updated to include edge
+
+	return robotAction
+}
+
+// createConfigurableTrajectoryAction creates a trajectory action with configurable parameters
+// This method allows for more flexibility in trajectory execution
+func (ah *ActionHandler) createConfigurableTrajectoryAction(serialNumber string, trajectoryName string, targetPosition NodePosition, armSetting string) *RobotActionMessage {
+	// Create intermediate node
+	intermediateNode := Node{
+		NodeID:       "intermediate_node_0_0",
+		Description:  fmt.Sprintf("intermediate point 0 of task trajectory-%s subtask index 0", trajectoryName),
+		SequenceID:   0,
+		Released:     true,
+		NodePosition: ah.createBaseNodePosition(),
+		Actions:      []NodeAction{},
+	}
+
+	// Create trajectory action with configurable arm
+	trajectoryAction := NodeAction{
+		ActionType:        "Roboligent Robin - Follow Trajectory",
+		ActionID:          ah.generateActionID(),
+		ActionDescription: "This action will trigger the behavior tree for following a recorded trajectory.",
+		BlockingType:      "NONE",
+		ActionParameters: []ActionParameter{
+			{
+				Key:   "arm",
+				Value: armSetting, // Configurable: "right", "left", "both"
+			},
+			{
+				Key:   "trajectory_name",
+				Value: trajectoryName,
+			},
+		},
+	}
+
+	// Create trajectory execution node with configurable position
+	trajectoryNode := Node{
+		NodeID:       ah.generateActionID(),
+		Description:  fmt.Sprintf("we are in 2 Subtask of trajectory-%s at index 0", trajectoryName),
+		SequenceID:   2,
+		Released:     true,
+		NodePosition: targetPosition, // Configurable position
+		Actions:      []NodeAction{trajectoryAction},
+	}
+
+	// Create edge
+	edge := Edge{
+		EdgeID:      "intermediate_edge_0_0",
+		SequenceID:  1,
+		Released:    true,
+		StartNodeID: "intermediate_node_0_0",
+		EndNodeID:   trajectoryNode.NodeID,
+		Actions:     []NodeAction{},
+	}
+
+	// Create robot action message
+	robotAction := ah.createBaseRobotMessage(serialNumber, "Roboligent")
+	robotAction.OrderID = ah.generateOrderID()
+	robotAction.OrderUpdateID = 0
+	robotAction.Nodes = []Node{intermediateNode, trajectoryNode}
+	robotAction.Edges = []Edge{edge}
 
 	return robotAction
 }
