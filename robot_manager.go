@@ -38,7 +38,7 @@ func (rm *RobotManager) SetStatusChangeCallback(callback StatusChangeCallback) {
 	rm.statusChangeCallback = callback
 }
 
-// UpdateRobotStatus updates robot status from enhanced connection message
+// UpdateRobotStatus updates robot status from basic connection message
 func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
@@ -71,78 +71,15 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 
 	// Store previous state for comparison
 	previousState := robot.ConnectionState
-	previousOrderID := robot.CurrentOrderID
 
 	// Update basic connection info
 	robot.ConnectionState = msg.ConnectionState
 	robot.LastUpdate = time.Now()
 	robot.LastHeaderID = msg.HeaderID
+	robot.IsOnline = (msg.ConnectionState == Online)
 
-	// Update extended state if present
-	if msg.OrderID != "" {
-		robot.CurrentOrderID = msg.OrderID
-		robot.OrderUpdateID = msg.OrderUpdateID
-		robot.IsExecutingOrder = true
-		robot.LastStateUpdate = time.Now()
-
-		// Track order start time
-		if robot.CurrentOrderID != previousOrderID && robot.OrderStartTime.IsZero() {
-			robot.OrderStartTime = time.Now()
-		}
-	} else {
-		// No active order
-		if robot.IsExecutingOrder {
-			// Order just finished
-			robot.OrderStartTime = time.Time{}
-		}
-		robot.CurrentOrderID = ""
-		robot.IsExecutingOrder = false
-	}
-
-	// Update driving/paused state
-	if msg.Driving != nil {
-		robot.IsDriving = *msg.Driving
-	}
-	if msg.Paused != nil {
-		robot.IsPaused = *msg.Paused
-	}
-
-	// Update operating mode
-	if msg.OperatingMode != "" {
-		robot.OperatingMode = msg.OperatingMode
-	}
-
-	// Update position
-	if msg.AGVPosition != nil && msg.AGVPosition.PositionInitialized {
-		robot.CurrentPosition = msg.AGVPosition
-	}
-
-	// Update battery state
-	if msg.BatteryState != nil {
-		robot.BatteryLevel = msg.BatteryState.BatteryCharge
-		robot.IsCharging = msg.BatteryState.Charging
-	}
-
-	// Update active actions
-	if len(msg.ActionStates) > 0 {
-		robot.ActiveActions = msg.ActionStates
-	}
-
-	// Update safety status
-	robot.HasSafetyIssue = false
-	if msg.SafetyState != nil {
-		robot.HasSafetyIssue = msg.SafetyState.EStop != "NONE" || msg.SafetyState.FieldViolation
-	}
-
-	// Update last error
-	if len(msg.Errors) > 0 {
-		robot.LastError = &msg.Errors[0] // Store most recent error
-	}
-
-	// Update last node
-	if msg.LastNodeID != "" {
-		robot.LastNodeID = msg.LastNodeID
-	}
+	// Note: Basic RobotConnectionMessage only contains connection state
+	// Detailed information (OrderID, Driving, etc.) comes from AGVDetailedStatus
 
 	// Log state changes
 	if previousState != msg.ConnectionState {
@@ -157,6 +94,69 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 			rm.mutex.Lock()
 		}
 	}
+}
+
+// UpdateRobotDetailedStatus updates detailed robot status from AGV messages
+func (rm *RobotManager) UpdateRobotDetailedStatus(agvStatus *AGVDetailedStatus) {
+	rm.mutex.Lock()
+	defer rm.mutex.Unlock()
+
+	serialNumber := agvStatus.SerialNumber
+
+	// Check if this robot is in target list
+	if !rm.targetSerials[serialNumber] {
+		log.Printf("⚠️  관리 대상이 아닌 로봇 상세 상태 무시 - Serial: %s", serialNumber)
+		return
+	}
+
+	// Get existing robot or create new one
+	robot, exists := rm.robots[serialNumber]
+	if !exists {
+		robot = &RobotStatus{
+			SerialNumber: serialNumber,
+			Manufacturer: agvStatus.Manufacturer,
+		}
+		rm.robots[serialNumber] = robot
+		log.Printf("✅ 새로운 로봇 등록 (상세 상태) - Serial: %s", serialNumber)
+	}
+
+	// Update detailed status
+	robot.DetailedStatus = agvStatus
+	robot.DetailedUpdate = time.Now()
+	robot.HasDetailedInfo = true
+	robot.IsOnline = (agvStatus.ConnectionState == Online)
+
+	// Update connection state and basic info
+	robot.ConnectionState = agvStatus.ConnectionState
+	robot.LastUpdate = time.Now()
+	robot.LastHeaderID = agvStatus.HeaderID
+
+	// Update order execution state from detailed status
+	robot.CurrentOrderID = agvStatus.OrderID
+	robot.OrderUpdateID = agvStatus.OrderUpdateID
+	robot.IsExecutingOrder = (agvStatus.OrderID != "")
+	robot.IsDriving = agvStatus.Driving
+	robot.IsPaused = agvStatus.Paused
+	robot.OperatingMode = agvStatus.OperatingMode
+	robot.LastNodeID = agvStatus.LastNodeID
+
+	// Update position and battery from detailed status
+	robot.CurrentPosition = &agvStatus.AGVPosition
+	robot.BatteryLevel = agvStatus.BatteryState.BatteryLevel // Changed from BatteryCharge
+	robot.IsCharging = agvStatus.BatteryState.IsCharging     // Changed from Charging
+
+	// Update error status
+	robot.HasErrors = len(agvStatus.Errors) > 0
+	if len(agvStatus.Errors) > 0 {
+		robot.LastError = &agvStatus.Errors[0]
+	}
+
+	// Update safety status
+	robot.HasSafetyIssue = (agvStatus.SafetyState.EStop != "NONE" || agvStatus.SafetyState.FieldViolation)
+
+	// Update active actions
+	robot.ActiveActions = make([]ActionState, len(agvStatus.ActionStates))
+	copy(robot.ActiveActions, agvStatus.ActionStates)
 }
 
 // GetRobotStatus returns the current status of a robot
@@ -205,18 +205,6 @@ func (rm *RobotManager) GetOnlineRobots() []string {
 		}
 	}
 	return onlineRobots
-}
-
-// GetRobotCount returns the total number of registered robots
-func (rm *RobotManager) GetRobotCount() int {
-	rm.mutex.RLock()
-	defer rm.mutex.RUnlock()
-	return len(rm.robots)
-}
-
-// GetOnlineRobotCount returns the number of online robots
-func (rm *RobotManager) GetOnlineRobotCount() int {
-	return len(rm.GetOnlineRobots())
 }
 
 // GetTargetSerials returns the list of target robot serials
@@ -326,6 +314,55 @@ func (rm *RobotManager) GetLowBatteryRobots(threshold float64) map[string]*Robot
 		if v.BatteryLevel > 0 && v.BatteryLevel < threshold && rm.targetSerials[k] {
 			robotCopy := *v
 			result[k] = &robotCopy
+		}
+	}
+	return result
+}
+
+// GetRobotsWithDetailedStatus returns robots that have detailed status information
+func (rm *RobotManager) GetRobotsWithDetailedStatus() map[string]*RobotStatus {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]*RobotStatus)
+	for k, v := range rm.robots {
+		if v.HasDetailedInfo && rm.targetSerials[k] {
+			robotCopy := *v
+			result[k] = &robotCopy
+		}
+	}
+	return result
+}
+
+// GetRobotBatteryStatus returns battery status for all robots with detailed info
+func (rm *RobotManager) GetRobotBatteryStatus() map[string]BatteryState {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]BatteryState)
+	for k, v := range rm.robots {
+		if v.HasDetailedInfo && v.DetailedStatus != nil && rm.targetSerials[k] {
+			result[k] = v.DetailedStatus.BatteryState // 직접 BatteryState 반환
+		}
+	}
+	return result
+}
+
+// GetActiveRobotOrders returns robots currently executing orders
+func (rm *RobotManager) GetActiveRobotOrders() map[string]ActiveOrder {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	result := make(map[string]ActiveOrder)
+	for k, v := range rm.robots {
+		if v.IsExecutingOrder && rm.targetSerials[k] {
+			result[k] = ActiveOrder{
+				OrderID:       v.CurrentOrderID,
+				IsDriving:     v.IsDriving,
+				IsPaused:      v.IsPaused,
+				ActiveActions: len(v.ActiveActions),
+				StartTime:     v.OrderStartTime,
+			}
 		}
 	}
 	return result

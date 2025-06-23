@@ -55,10 +55,6 @@ type MQTTClient struct {
 	// Graceful shutdown
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
-	shutdownWG     sync.WaitGroup
-
-	// Connection monitoring
-	connectionMonitorStop chan struct{}
 }
 
 // MessageHandlers contains all message handling functions
@@ -73,12 +69,11 @@ func NewMQTTClient(config *MQTTConfig, handlers *MessageHandlers) *MQTTClient {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &MQTTClient{
-		config:                config,
-		handlers:              handlers,
-		status:                Disconnected,
-		shutdownCtx:           ctx,
-		shutdownCancel:        cancel,
-		connectionMonitorStop: make(chan struct{}),
+		config:         config,
+		handlers:       handlers,
+		status:         Disconnected,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 	}
 
 	// Create MQTT client
@@ -253,37 +248,6 @@ func (mc *MQTTClient) Publish(topic string, payload []byte) error {
 	return nil
 }
 
-// StartConnectionMonitor starts monitoring connection status
-func (mc *MQTTClient) StartConnectionMonitor() {
-	mc.shutdownWG.Add(1)
-	go func() {
-		defer mc.shutdownWG.Done()
-
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				status := mc.GetConnectionStatus()
-				reconnects := atomic.LoadInt32(&mc.reconnectCount)
-
-				log.Printf("📊 MQTT 연결 상태: %s (재연결: %d회)", status, reconnects)
-
-				// Alert if connection is down
-				if status != Connected {
-					log.Printf("⚠️  MQTT 연결 이상 - 상태: %s", status)
-				}
-
-			case <-mc.connectionMonitorStop:
-				return
-			case <-mc.shutdownCtx.Done():
-				return
-			}
-		}
-	}()
-}
-
 // Stop gracefully disconnects the MQTT client
 func (mc *MQTTClient) Stop() {
 	log.Printf("🛑 MQTT 클라이언트 종료 중...")
@@ -291,17 +255,11 @@ func (mc *MQTTClient) Stop() {
 	// Signal shutdown
 	mc.shutdownCancel()
 
-	// Stop connection monitor
-	close(mc.connectionMonitorStop)
-
 	// Disconnect client
 	if mc.client.IsConnected() {
 		mc.client.Disconnect(250)
 		log.Printf("✅ MQTT 클라이언트 연결 해제됨")
 	}
-
-	// Wait for goroutines to finish
-	mc.shutdownWG.Wait()
 
 	log.Printf("✅ MQTT 클라이언트 종료 완료")
 }

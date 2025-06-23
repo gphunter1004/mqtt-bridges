@@ -23,10 +23,8 @@ type MQTTBridge struct {
 	shutdownCancel context.CancelFunc
 	shutdownWG     sync.WaitGroup
 
-	// Monitoring goroutines control
-	statusMonitorStop   chan struct{}
-	healthMonitorStop   chan struct{}
-	detailedMonitorStop chan struct{}
+	// Unified monitoring control
+	statusMonitorStop chan struct{}
 }
 
 // NewMQTTBridge creates a new MQTT bridge with all components
@@ -51,17 +49,15 @@ func NewMQTTBridge(config *Config) *MQTTBridge {
 	statusMonitor := NewRobotStatusMonitor(robotManager, messageProcessor, config)
 
 	return &MQTTBridge{
-		mqttClient:          mqttClient,
-		robotManager:        robotManager,
-		actionHandler:       actionHandler,
-		messageProcessor:    messageProcessor,
-		statusMonitor:       statusMonitor,
-		config:              config,
-		shutdownCtx:         ctx,
-		shutdownCancel:      cancel,
-		statusMonitorStop:   make(chan struct{}),
-		healthMonitorStop:   make(chan struct{}),
-		detailedMonitorStop: make(chan struct{}),
+		mqttClient:        mqttClient,
+		robotManager:      robotManager,
+		actionHandler:     actionHandler,
+		messageProcessor:  messageProcessor,
+		statusMonitor:     statusMonitor,
+		config:            config,
+		shutdownCtx:       ctx,
+		shutdownCancel:    cancel,
+		statusMonitorStop: make(chan struct{}),
 	}
 }
 
@@ -85,110 +81,60 @@ func (mb *MQTTBridge) Start() error {
 
 // startMonitoring starts all monitoring goroutines
 func (mb *MQTTBridge) startMonitoring() {
-	// Start MQTT connection monitoring
-	mb.mqttClient.StartConnectionMonitor()
-
-	// Start status monitoring goroutine
+	// Start unified monitoring goroutine (combines status + health)
 	mb.shutdownWG.Add(1)
 	go func() {
 		defer mb.shutdownWG.Done()
-		mb.runStatusMonitoring()
-	}()
-
-	// Start health check goroutine
-	mb.shutdownWG.Add(1)
-	go func() {
-		defer mb.shutdownWG.Done()
-		mb.runHealthMonitoring()
-	}()
-
-	// Start detailed status monitoring goroutine
-	mb.shutdownWG.Add(1)
-	go func() {
-		defer mb.shutdownWG.Done()
-		mb.runDetailedStatusMonitoring()
+		mb.runUnifiedMonitoring()
 	}()
 }
 
-// runStatusMonitoring runs the main status monitoring loop
-func (mb *MQTTBridge) runStatusMonitoring() {
-	ticker := time.NewTicker(time.Duration(mb.config.App.StatusIntervalSeconds) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Print connection status
-			status := mb.mqttClient.GetConnectionStatus()
-			log.Printf("MQTT 연결: %s", status)
-
-			// Print robot status summary
-			mb.statusMonitor.PrintStatusSummary()
-
-			// Check for alerts
-			if status != Connected {
-				log.Printf("⚠️  MQTT 연결 문제 - 상태: %s", status)
-			}
-
-			// Check battery levels
-			mb.statusMonitor.CheckBatteryLevels()
-
-		case <-mb.statusMonitorStop:
-			return
-		case <-mb.shutdownCtx.Done():
-			return
-		}
-	}
-}
-
-// runHealthMonitoring runs the connection health monitoring loop
-func (mb *MQTTBridge) runHealthMonitoring() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+// runUnifiedMonitoring runs unified status and health monitoring
+func (mb *MQTTBridge) runUnifiedMonitoring() {
+	statusTicker := time.NewTicker(time.Duration(mb.config.App.StatusIntervalSeconds) * time.Second)
+	healthTicker := time.NewTicker(15 * time.Second) // 간격 조정 (10초 -> 15초)
+	defer statusTicker.Stop()
+	defer healthTicker.Stop()
 
 	consecutiveFailures := 0
 	const maxFailures = 3
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-statusTicker.C:
+			// Combined status monitoring
+			status := mb.mqttClient.GetConnectionStatus()
+			reconnectCount := mb.mqttClient.GetReconnectCount()
+
+			// Print unified status
+			log.Printf("📊 === MQTT 브릿지 상태 ===")
+			log.Printf("   MQTT: %s (재연결: %d회)", status, reconnectCount)
+
+			// Print robot status summary
+			mb.statusMonitor.PrintStatusSummary()
+
+			// Check battery levels
+			mb.statusMonitor.CheckBatteryLevels()
+
+			log.Printf("   ========================")
+
+		case <-healthTicker.C:
+			// Health check only (no duplicate logging)
 			if !mb.mqttClient.IsConnected() {
 				consecutiveFailures++
 				status := mb.mqttClient.GetConnectionStatus()
 
 				if consecutiveFailures >= maxFailures {
-					log.Printf("🚨 심각: MQTT 연결 실패가 %d회 연속 발생 - 상태: %s",
-						consecutiveFailures, status)
-				} else {
-					log.Printf("⚠️  MQTT 연결 확인 필요 (%d/%d) - 상태: %s",
-						consecutiveFailures, maxFailures, status)
+					log.Printf("🚨 MQTT 연결 심각 - %d회 연속 실패 (상태: %s)", consecutiveFailures, status)
 				}
 			} else {
 				if consecutiveFailures > 0 {
-					log.Printf("✅ MQTT 연결 복구됨 (이전 실패: %d회)", consecutiveFailures)
+					log.Printf("✅ MQTT 연결 복구 (이전 실패: %d회)", consecutiveFailures)
 				}
 				consecutiveFailures = 0
 			}
 
-		case <-mb.healthMonitorStop:
-			return
-		case <-mb.shutdownCtx.Done():
-			return
-		}
-	}
-}
-
-// runDetailedStatusMonitoring runs the detailed status monitoring loop
-func (mb *MQTTBridge) runDetailedStatusMonitoring() {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			mb.statusMonitor.PrintDetailedStatusReport()
-
-		case <-mb.detailedMonitorStop:
+		case <-mb.statusMonitorStop:
 			return
 		case <-mb.shutdownCtx.Done():
 			return
@@ -203,10 +149,8 @@ func (mb *MQTTBridge) Stop() {
 	// Signal shutdown to all components
 	mb.shutdownCancel()
 
-	// Stop monitoring goroutines
+	// Stop monitoring goroutine
 	close(mb.statusMonitorStop)
-	close(mb.healthMonitorStop)
-	close(mb.detailedMonitorStop)
 
 	// Stop MQTT client
 	mb.mqttClient.Stop()

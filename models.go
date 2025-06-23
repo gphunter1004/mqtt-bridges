@@ -11,7 +11,7 @@ const (
 	Offline          ConnectionState = "OFFLINE"
 )
 
-// RobotConnectionMessage represents the enhanced MQTT message structure for robot connection/state
+// RobotConnectionMessage represents basic MQTT connection status messages
 type RobotConnectionMessage struct {
 	HeaderID        int             `json:"headerId"`
 	Timestamp       string          `json:"timestamp"`
@@ -19,30 +19,40 @@ type RobotConnectionMessage struct {
 	Manufacturer    string          `json:"manufacturer"`
 	SerialNumber    string          `json:"serialNumber"`
 	ConnectionState ConnectionState `json:"connectionState"`
+}
 
-	// Order 실행 상태 정보 (optional fields)
-	OrderID       string   `json:"orderId,omitempty"`
-	OrderUpdateID int      `json:"orderUpdateId,omitempty"`
-	LastNodeID    string   `json:"lastNodeId,omitempty"`
-	LastNodeSeqID int      `json:"lastNodeSequenceId,omitempty"`
-	Driving       *bool    `json:"driving,omitempty"`
-	Paused        *bool    `json:"paused,omitempty"`
-	OperatingMode string   `json:"operatingMode,omitempty"`
-	DistanceSince *float64 `json:"distanceSinceLastNode,omitempty"`
+// AGVDetailedStatus represents detailed AGV status messages
+type AGVDetailedStatus struct {
+	HeaderID        int             `json:"headerId"`
+	Timestamp       string          `json:"timestamp"`
+	Version         string          `json:"version"`
+	Manufacturer    string          `json:"manufacturer"`
+	SerialNumber    string          `json:"serialNumber"`
+	ConnectionState ConnectionState `json:"connectionState"`
 
-	// 상태 배열들 (optional)
-	ActionStates []ActionState `json:"actionStates,omitempty"`
-	NodeStates   []NodeState   `json:"nodeStates,omitempty"`
-	EdgeStates   []EdgeState   `json:"edgeStates,omitempty"`
-	Errors       []ErrorInfo   `json:"errors,omitempty"`
-	Information  []InfoMessage `json:"information,omitempty"`
+	// Order execution state
+	OrderID       string  `json:"orderId,omitempty"`
+	OrderUpdateID int     `json:"orderUpdateId,omitempty"`
+	LastNodeID    string  `json:"lastNodeId,omitempty"`
+	LastNodeSeqID int     `json:"lastNodeSequenceId,omitempty"`
+	Driving       bool    `json:"driving"`
+	Paused        bool    `json:"paused"`
+	OperatingMode string  `json:"operatingMode"`
+	DistanceSince float64 `json:"distanceSinceLastNode,omitempty"`
 
-	// 로봇 위치 및 상태 (optional)
-	AGVPosition    *AGVPosition  `json:"agvPosition,omitempty"`
-	BatteryState   *BatteryState `json:"batteryState,omitempty"`
-	SafetyState    *SafetyState  `json:"safetyState,omitempty"`
-	Velocity       *Velocity     `json:"velocity,omitempty"`
-	NewBaseRequest *bool         `json:"newBaseRequest,omitempty"`
+	// State arrays
+	ActionStates []ActionState `json:"actionStates"`
+	NodeStates   []NodeState   `json:"nodeStates"`
+	EdgeStates   []Edge        `json:"edgeStates"` // Changed from []EdgeState to []Edge
+	Errors       []ErrorInfo   `json:"errors"`
+	Information  []InfoMessage `json:"information"`
+
+	// Robot position and state
+	AGVPosition    AGVPosition  `json:"agvPosition"`
+	BatteryState   BatteryState `json:"batteryState"`
+	SafetyState    SafetyState  `json:"safetyState"`
+	Velocity       Velocity     `json:"velocity"`
+	NewBaseRequest bool         `json:"newBaseRequest,omitempty"`
 }
 
 // ActionState represents the state of an action being executed
@@ -50,7 +60,7 @@ type ActionState struct {
 	ActionID          string `json:"actionId"`
 	ActionType        string `json:"actionType"`
 	ActionDescription string `json:"actionDescription"`
-	ActionStatus      string `json:"actionStatus"` // WAITING, RUNNING, FINISHED, FAILED, etc.
+	ActionStatus      string `json:"actionStatus"`
 	ResultDescription string `json:"resultDescription"`
 }
 
@@ -83,12 +93,12 @@ type AGVPosition struct {
 	DeviationRange      float64 `json:"deviationRange"`
 }
 
-// BatteryState represents robot's battery status
+// BatteryState represents robot's battery status (통합된 배터리 상태)
 type BatteryState struct {
-	BatteryCharge  float64 `json:"batteryCharge"`
+	BatteryLevel   float64 `json:"batteryCharge"` // JSON에서는 batteryCharge로 직렬화
 	BatteryVoltage float64 `json:"batteryVoltage"`
 	BatteryHealth  int     `json:"batteryHealth"`
-	Charging       bool    `json:"charging"`
+	IsCharging     bool    `json:"charging"` // JSON에서는 charging으로 직렬화
 	Reach          int     `json:"reach"`
 }
 
@@ -128,7 +138,7 @@ type RobotStatus struct {
 	HasFactsheet    bool            `json:"hasFactsheet"`
 	FactsheetUpdate time.Time       `json:"factsheetUpdate"`
 
-	// Order 실행 상태
+	// Order execution state
 	CurrentOrderID   string    `json:"currentOrderId,omitempty"`
 	OrderUpdateID    int       `json:"orderUpdateId,omitempty"`
 	OrderStartTime   time.Time `json:"orderStartTime,omitempty"`
@@ -138,25 +148,32 @@ type RobotStatus struct {
 	IsPaused         bool      `json:"isPaused"`
 	OperatingMode    string    `json:"operatingMode,omitempty"`
 
-	// 위치 및 센서 정보
+	// Position and sensor info
 	CurrentPosition *AGVPosition `json:"currentPosition,omitempty"`
 	BatteryLevel    float64      `json:"batteryLevel,omitempty"`
 	IsCharging      bool         `json:"isCharging"`
 
-	// 실행 중인 액션 및 에러
+	// Active actions and errors
 	ActiveActions  []ActionState `json:"activeActions,omitempty"`
 	LastError      *ErrorInfo    `json:"lastError,omitempty"`
 	HasSafetyIssue bool          `json:"hasSafetyIssue"`
 	LastNodeID     string        `json:"lastNodeId,omitempty"`
+
+	// Detailed info tracking
+	DetailedStatus  *AGVDetailedStatus `json:"detailedStatus,omitempty"`
+	DetailedUpdate  time.Time          `json:"detailedUpdate"`
+	HasDetailedInfo bool               `json:"hasDetailedInfo"`
+	IsOnline        bool               `json:"isOnline"`
+	HasErrors       bool               `json:"hasErrors"`
 }
 
 // PLCActionMessage represents the message from PLC bridge/actions topic
 type PLCActionMessage struct {
 	Action       string `json:"action"`
-	SerialNumber string `json:"serialNumber,omitempty"` // Optional, if not provided, send to all online robots
+	SerialNumber string `json:"serialNumber"` // Required in new format
 }
 
-// RobotActionMessage represents the message to robot meili/v2/Roboligent/{serial_number}/instantActions
+// RobotActionMessage represents the message to robot
 type RobotActionMessage struct {
 	HeaderID     int    `json:"headerId"`
 	Timestamp    string `json:"timestamp"`
@@ -167,11 +184,74 @@ type RobotActionMessage struct {
 	// For simple actions (like init and factsheetRequest)
 	Actions []Action `json:"actions,omitempty"`
 
-	// For order-based actions (like startEvisceration)
+	// For order-based actions (like inference and trajectory)
 	OrderID       string `json:"orderId,omitempty"`
 	OrderUpdateID int    `json:"orderUpdateId,omitempty"`
 	Nodes         []Node `json:"nodes,omitempty"`
 	Edges         []Edge `json:"edges,omitempty"`
+}
+
+// Action represents a robot action (used in both simple actions and node actions)
+type Action struct {
+	ActionType        string            `json:"actionType"`
+	ActionID          string            `json:"actionId"`
+	ActionDescription string            `json:"actionDescription,omitempty"` // Optional description
+	BlockingType      string            `json:"blockingType"`
+	ActionParameters  []ActionParameter `json:"actionParameters"`
+}
+
+// Node represents a robot navigation node
+type Node struct {
+	NodeID       string       `json:"nodeId"`
+	Description  string       `json:"description"`
+	SequenceID   int          `json:"sequenceId"`
+	Released     bool         `json:"released"`
+	NodePosition NodePosition `json:"nodePosition"`
+	Actions      []Action     `json:"actions"` // Changed from []NodeAction to []Action
+}
+
+// NodePosition represents robot position and orientation
+type NodePosition struct {
+	X                     float64 `json:"x"`
+	Y                     float64 `json:"y"`
+	Theta                 float64 `json:"theta"`
+	AllowedDeviationXY    float64 `json:"allowedDeviationXY"`
+	AllowedDeviationTheta float64 `json:"allowedDeviationTheta"`
+	MapID                 string  `json:"mapId"`
+}
+
+// Edge represents a connection between nodes
+type Edge struct {
+	EdgeID      string   `json:"edgeId"`
+	SequenceID  int      `json:"sequenceId"`
+	Released    bool     `json:"released"`
+	StartNodeID string   `json:"startNodeId"`
+	EndNodeID   string   `json:"endNodeId"`
+	Actions     []Action `json:"actions"` // Changed from []NodeAction to []Action
+}
+
+// ActionParameter represents action parameters
+type ActionParameter struct {
+	Key   string      `json:"key"`
+	Value interface{} `json:"value"`
+}
+
+// Pose represents robot position and orientation (for init action)
+type Pose struct {
+	LastNodeID string  `json:"lastNodeId"`
+	MapID      string  `json:"mapId"`
+	Theta      float64 `json:"theta"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+}
+
+// ActiveOrder represents an active robot order for monitoring
+type ActiveOrder struct {
+	OrderID       string    `json:"orderId"`
+	IsDriving     bool      `json:"isDriving"`
+	IsPaused      bool      `json:"isPaused"`
+	ActiveActions int       `json:"activeActions"`
+	StartTime     time.Time `json:"startTime"`
 }
 
 // FactsheetResponseMessage represents the factsheet response from robot
@@ -237,66 +317,4 @@ type TypeSpecification struct {
 	NavigationTypes   []string `json:"NavigationTypes"`
 	SeriesDescription string   `json:"SeriesDescription"`
 	SeriesName        string   `json:"SeriesName"`
-}
-
-// Action represents a simple robot action (for init)
-type Action struct {
-	ActionType       string            `json:"actionType"`
-	ActionID         string            `json:"actionId"`
-	BlockingType     string            `json:"blockingType"`
-	ActionParameters []ActionParameter `json:"actionParameters"`
-}
-
-// Node represents a robot navigation node (for orders)
-type Node struct {
-	NodeID       string       `json:"nodeId"`
-	Description  string       `json:"description"`
-	SequenceID   int          `json:"sequenceId"`
-	Released     bool         `json:"released"`
-	NodePosition NodePosition `json:"nodePosition"`
-	Actions      []NodeAction `json:"actions"`
-}
-
-// NodePosition represents robot position and orientation
-type NodePosition struct {
-	X                     float64 `json:"x"`
-	Y                     float64 `json:"y"`
-	Theta                 float64 `json:"theta"`
-	AllowedDeviationXY    float64 `json:"allowedDeviationXY"`
-	AllowedDeviationTheta float64 `json:"allowedDeviationTheta"`
-	MapID                 string  `json:"mapId"`
-}
-
-// NodeAction represents an action within a node
-type NodeAction struct {
-	ActionType        string            `json:"actionType"`
-	ActionID          string            `json:"actionId"`
-	ActionDescription string            `json:"actionDescription"`
-	BlockingType      string            `json:"blockingType"`
-	ActionParameters  []ActionParameter `json:"actionParameters"`
-}
-
-// Edge represents a connection between nodes
-type Edge struct {
-	EdgeID      string       `json:"edgeId"`
-	SequenceID  int          `json:"sequenceId"`
-	Released    bool         `json:"released"`
-	StartNodeID string       `json:"startNodeId"`
-	EndNodeID   string       `json:"endNodeId"`
-	Actions     []NodeAction `json:"actions"`
-}
-
-// ActionParameter represents action parameters
-type ActionParameter struct {
-	Key   string      `json:"key"`
-	Value interface{} `json:"value"`
-}
-
-// Pose represents robot position and orientation (for init action)
-type Pose struct {
-	LastNodeID string  `json:"lastNodeId"`
-	MapID      string  `json:"mapId"`
-	Theta      float64 `json:"theta"`
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
 }

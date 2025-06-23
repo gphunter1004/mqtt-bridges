@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -88,94 +90,6 @@ func (rsm *RobotStatusMonitor) sendActionToRobot(plcAction *PLCActionMessage, se
 	return rsm.messageProcessor.sendActionToRobot(plcAction, serialNumber)
 }
 
-// PrintDetailedStatusReport prints a comprehensive status report for all robots
-func (rsm *RobotStatusMonitor) PrintDetailedStatusReport() {
-	robotsWithDetailedStatus := rsm.robotManager.GetRobotsWithDetailedStatus()
-
-	if len(robotsWithDetailedStatus) == 0 {
-		return
-	}
-
-	log.Printf("📊 === AGV 상세 상태 리포트 ===")
-
-	for serial, robot := range robotsWithDetailedStatus {
-		if robot.DetailedStatus == nil {
-			continue
-		}
-
-		detailed := robot.DetailedStatus
-		log.Printf("   🤖 %s (%s):", serial, robot.Manufacturer)
-
-		// Position and movement
-		pos := detailed.AGVPosition
-		vel := detailed.Velocity
-		log.Printf("     📍 위치: (%.3f, %.3f) 각도: %.2f° 점수: %.2f",
-			pos.X, pos.Y, pos.Theta*180/3.14159, pos.LocalizationScore)
-		log.Printf("     🚀 속도: vx=%.2f vy=%.2f ω=%.2f",
-			vel.VX, vel.VY, vel.Omega)
-
-		// Battery details
-		battery := detailed.BatteryState
-		log.Printf("     🔋 배터리: %.1f%% (%.1fV) 건강도: %d 충전: %t",
-			battery.BatteryCharge, battery.BatteryVoltage,
-			battery.BatteryHealth, battery.Charging)
-
-		// Safety status
-		safety := detailed.SafetyState
-		log.Printf("     🛡️  안전: E-Stop=%s 영역위반=%t",
-			safety.EStop, safety.FieldViolation)
-
-		// Current tasks
-		log.Printf("     📋 작업: 주행=%t 일시정지=%t 모드=%s",
-			detailed.Driving, detailed.Paused, detailed.OperatingMode)
-
-		if detailed.OrderID != "" {
-			log.Printf("     📦 주문: %s (업데이트: %d) 마지막노드: %s",
-				detailed.OrderID, detailed.OrderUpdateID, detailed.LastNodeID)
-		}
-
-		// Actions
-		if len(detailed.ActionStates) > 0 {
-			log.Printf("     🎯 액션 (%d개):", len(detailed.ActionStates))
-			for i, action := range detailed.ActionStates {
-				log.Printf("       %d. %s: %s", i+1, action.ActionType, action.ActionStatus)
-			}
-		}
-
-		// Nodes and edges
-		if len(detailed.NodeStates) > 0 {
-			log.Printf("     🗺️  노드 (%d개): ", len(detailed.NodeStates))
-			for _, node := range detailed.NodeStates {
-				log.Printf("       %s seq=%d (%.2f,%.2f,%.2f°)",
-					node.NodeID, node.SequenceID,
-					node.NodePosition.X, node.NodePosition.Y,
-					node.NodePosition.Theta*180/3.14159)
-			}
-		}
-
-		if len(detailed.EdgeStates) > 0 {
-			log.Printf("     🔗 엣지 (%d개):", len(detailed.EdgeStates))
-			for _, edge := range detailed.EdgeStates {
-				log.Printf("       %s seq=%d -> %s",
-					edge.EdgeID, edge.SequenceID, edge.EndNodeID)
-			}
-		}
-
-		// Errors and warnings
-		if len(detailed.Errors) > 0 {
-			log.Printf("     ❌ 에러 (%d개): %v", len(detailed.Errors), detailed.Errors)
-		}
-		if len(detailed.Information) > 0 {
-			log.Printf("     ℹ️  정보 (%d개): %v", len(detailed.Information), detailed.Information)
-		}
-
-		log.Printf("     ⏰ 마지막 업데이트: %s",
-			robot.DetailedUpdate.Format("2006-01-02 15:04:05"))
-		log.Printf("     ---")
-	}
-	log.Printf("   ===============================")
-}
-
 // PrintStatusSummary prints a summary of all robot statuses
 func (rsm *RobotStatusMonitor) PrintStatusSummary() {
 	onlineRobots := rsm.robotManager.GetOnlineRobots()
@@ -183,20 +97,15 @@ func (rsm *RobotStatusMonitor) PrintStatusSummary() {
 	registeredTargetRobots := rsm.robotManager.GetRegisteredTargetRobots()
 	missingTargetRobots := rsm.robotManager.GetMissingTargetRobots()
 	targetRobotCount := rsm.robotManager.GetTargetRobotCount()
-	robotsWithDetailedStatus := rsm.robotManager.GetRobotsWithDetailedStatus()
 
-	log.Printf("📊 === 시스템 상태 요약 ===")
-	log.Printf("   대상 로봇: %d대 (등록: %d대, 미등록: %d대)",
-		targetRobotCount, len(registeredTargetRobots), len(missingTargetRobots))
-	log.Printf("   로봇 현황 - 총: %d대, 온라인: %d대, 상세정보: %d대",
-		len(allRobots), len(onlineRobots), len(robotsWithDetailedStatus))
+	log.Printf("   로봇 상태 - 대상: %d대, 등록: %d대, 온라인: %d대",
+		targetRobotCount, len(registeredTargetRobots), len(onlineRobots))
 
 	if len(missingTargetRobots) > 0 {
 		log.Printf("   ⚠️  미등록 대상 로봇: %v", missingTargetRobots)
 	}
 
 	if len(registeredTargetRobots) > 0 {
-		log.Printf("   등록된 대상 로봇:")
 		for serialNumber, robot := range registeredTargetRobots {
 			statusIcon := "🔴"
 			if robot.IsOnline {
@@ -210,100 +119,46 @@ func (rsm *RobotStatusMonitor) PrintStatusSummary() {
 				factsheetIcon = "📋"
 			}
 
-			detailedIcon := ""
-			if robot.HasDetailedInfo {
-				detailedIcon = "📊"
-			}
+			log.Printf("   %s %s %s: %s",
+				statusIcon, factsheetIcon, serialNumber, robot.ConnectionState)
 
-			// Display basic info
-			log.Printf("     %s %s %s %s: %s (업데이트: %s)",
-				statusIcon, factsheetIcon, detailedIcon, serialNumber, robot.ConnectionState,
-				robot.LastUpdate.Format("15:04:05"))
-
-			// Display detailed status if available
+			// Show additional info if detailed status available
 			if robot.HasDetailedInfo && robot.DetailedStatus != nil {
-				log.Printf("       🔋 배터리: %.1f%% %s| 🚗 주행: %t | ⏸️  일시정지: %t | ⚙️  모드: %s",
-					robot.BatteryLevel,
-					formatChargingStatus(robot.IsCharging),
-					robot.IsDriving,
-					robot.IsPaused,
-					robot.OperatingMode)
+				details := []string{}
 
-				if robot.CurrentOrderID != "" {
-					log.Printf("       📦 주문: %s | 🎯 액션: %d개 | 📍 노드: %s",
-						robot.CurrentOrderID,
-						robot.ActiveActions,
-						robot.DetailedStatus.LastNodeID)
+				if robot.BatteryLevel > 0 {
+					batteryInfo := fmt.Sprintf("배터리 %.1f%%", robot.BatteryLevel)
+					if robot.IsCharging {
+						batteryInfo += "⚡"
+					}
+					details = append(details, batteryInfo)
 				}
 
-				if robot.HasErrors {
-					log.Printf("       ⚠️  에러: %d개", len(robot.DetailedStatus.Errors))
+				if robot.IsExecutingOrder {
+					orderInfo := fmt.Sprintf("주문: %s", robot.CurrentOrderID)
+					if robot.IsDriving {
+						orderInfo += " (주행중)"
+					} else if robot.IsPaused {
+						orderInfo += " (일시정지)"
+					}
+					details = append(details, orderInfo)
 				}
 
-				// Position info
-				pos := robot.DetailedStatus.AGVPosition
-				log.Printf("       📍 위치: (%.2f, %.2f, %.1f°) | 🎯 정확도: %.2f",
-					pos.X, pos.Y, pos.Theta*180/3.14159, pos.LocalizationScore)
+				if len(robot.ActiveActions) > 0 {
+					details = append(details, fmt.Sprintf("액션 %d개", len(robot.ActiveActions)))
+				}
+
+				if len(details) > 0 {
+					log.Printf("     └─ %s", strings.Join(details, " | "))
+				}
 			}
 		}
 	}
 
 	// Show non-target robots if any (for debugging)
-	nonTargetRobots := make(map[string]*RobotStatus)
-	for serialNumber, robot := range allRobots {
-		if !rsm.robotManager.IsTargetRobot(serialNumber) {
-			nonTargetRobots[serialNumber] = robot
-		}
-	}
-
-	if len(nonTargetRobots) > 0 {
-		log.Printf("   📋 대상 외 로봇 (%d대):", len(nonTargetRobots))
-		for serialNumber, robot := range nonTargetRobots {
-			log.Printf("     ℹ️  %s: %s", serialNumber, robot.ConnectionState)
-		}
-	}
-
-	rsm.printBatterySummary()
-	rsm.printActiveOrdersSummary()
-
-	log.Printf("   ========================")
-}
-
-// printBatterySummary prints battery status summary
-func (rsm *RobotStatusMonitor) printBatterySummary() {
-	batteryStatuses := rsm.robotManager.GetRobotBatteryStatus()
-	if len(batteryStatuses) == 0 {
-		return
-	}
-
-	log.Printf("   🔋 배터리 상태 요약:")
-	for serial, battery := range batteryStatuses {
-		chargingStatus := ""
-		if battery.IsCharging {
-			chargingStatus = " (충전중)"
-		}
-		log.Printf("     %s: %.1f%%%s (전압: %.1fV)",
-			serial, battery.BatteryLevel, chargingStatus, battery.BatteryVoltage)
-	}
-}
-
-// printActiveOrdersSummary prints active orders summary
-func (rsm *RobotStatusMonitor) printActiveOrdersSummary() {
-	activeOrders := rsm.robotManager.GetActiveRobotOrders()
-	if len(activeOrders) == 0 {
-		return
-	}
-
-	log.Printf("   📦 활성 주문 요약:")
-	for serial, order := range activeOrders {
-		statusText := ""
-		if order.IsPaused {
-			statusText = " (일시정지)"
-		} else if order.IsDriving {
-			statusText = " (주행중)"
-		}
-		log.Printf("     %s: %s - 액션 %d개%s",
-			serial, order.OrderID, order.ActiveActions, statusText)
+	nonTargetCount := len(allRobots) - len(registeredTargetRobots)
+	if nonTargetCount > 0 {
+		log.Printf("   📋 대상 외 로봇: %d대", nonTargetCount)
 	}
 }
 
@@ -311,96 +166,17 @@ func (rsm *RobotStatusMonitor) printActiveOrdersSummary() {
 func (rsm *RobotStatusMonitor) CheckBatteryLevels() {
 	batteryStatuses := rsm.robotManager.GetRobotBatteryStatus()
 
+	lowBatteryCount := 0
 	for serial, battery := range batteryStatuses {
 		if battery.BatteryLevel < 20.0 && !battery.IsCharging {
-			log.Printf("🚨 배터리 부족 경고 - %s: %.1f%%", serial, battery.BatteryLevel)
-		}
-	}
-}
-
-// CheckRobotErrors checks for robots with errors and logs warnings
-func (rsm *RobotStatusMonitor) CheckRobotErrors() {
-	robotsWithDetailedStatus := rsm.robotManager.GetRobotsWithDetailedStatus()
-
-	for serial, robot := range robotsWithDetailedStatus {
-		if robot.HasErrors && robot.DetailedStatus != nil {
-			log.Printf("⚠️  로봇 에러 감지 - %s: %d개 에러", serial, len(robot.DetailedStatus.Errors))
-			for i, err := range robot.DetailedStatus.Errors {
-				log.Printf("     %d. %v", i+1, err)
-			}
-		}
-	}
-}
-
-// CheckSafetyIssues checks for safety-related issues
-func (rsm *RobotStatusMonitor) CheckSafetyIssues() {
-	robotsWithDetailedStatus := rsm.robotManager.GetRobotsWithDetailedStatus()
-
-	for serial, robot := range robotsWithDetailedStatus {
-		if robot.DetailedStatus == nil {
-			continue
-		}
-
-		safety := robot.DetailedStatus.SafetyState
-
-		// Check E-Stop status
-		if safety.EStop != "NONE" {
-			log.Printf("🚨 E-Stop 활성화 - %s: %s", serial, safety.EStop)
-		}
-
-		// Check field violations
-		if safety.FieldViolation {
-			log.Printf("🚨 필드 위반 감지 - %s", serial)
-		}
-	}
-}
-
-// GetRobotHealthSummary returns a summary of robot health status
-func (rsm *RobotStatusMonitor) GetRobotHealthSummary() RobotHealthSummary {
-	onlineRobots := rsm.robotManager.GetOnlineRobots()
-	batteryStatuses := rsm.robotManager.GetRobotBatteryStatus()
-	robotsWithDetailedStatus := rsm.robotManager.GetRobotsWithDetailedStatus()
-
-	summary := RobotHealthSummary{
-		TotalOnlineRobots:    len(onlineRobots),
-		RobotsWithLowBattery: 0,
-		RobotsWithErrors:     0,
-		RobotsCharging:       0,
-		RobotsDriving:        0,
-		AverageBatteryLevel:  0.0,
-		LastCheckTime:        time.Now(),
-	}
-
-	// Calculate battery statistics
-	totalBatteryLevel := 0.0
-	for _, battery := range batteryStatuses {
-		totalBatteryLevel += battery.BatteryLevel
-
-		if battery.BatteryLevel < 20.0 {
-			summary.RobotsWithLowBattery++
-		}
-
-		if battery.IsCharging {
-			summary.RobotsCharging++
+			log.Printf("   🚨 배터리 부족: %s (%.1f%%)", serial, battery.BatteryLevel)
+			lowBatteryCount++
 		}
 	}
 
-	if len(batteryStatuses) > 0 {
-		summary.AverageBatteryLevel = totalBatteryLevel / float64(len(batteryStatuses))
+	if lowBatteryCount == 0 && len(batteryStatuses) > 0 {
+		log.Printf("   🔋 배터리 상태: 정상 (%d대)", len(batteryStatuses))
 	}
-
-	// Calculate error and driving statistics
-	for _, robot := range robotsWithDetailedStatus {
-		if robot.HasErrors {
-			summary.RobotsWithErrors++
-		}
-
-		if robot.IsDriving {
-			summary.RobotsDriving++
-		}
-	}
-
-	return summary
 }
 
 // formatChargingStatus formats charging status with icon
@@ -409,15 +185,4 @@ func formatChargingStatus(isCharging bool) string {
 		return "⚡"
 	}
 	return ""
-}
-
-// RobotHealthSummary represents overall robot health statistics
-type RobotHealthSummary struct {
-	TotalOnlineRobots    int       `json:"totalOnlineRobots"`
-	RobotsWithLowBattery int       `json:"robotsWithLowBattery"`
-	RobotsWithErrors     int       `json:"robotsWithErrors"`
-	RobotsCharging       int       `json:"robotsCharging"`
-	RobotsDriving        int       `json:"robotsDriving"`
-	AverageBatteryLevel  float64   `json:"averageBatteryLevel"`
-	LastCheckTime        time.Time `json:"lastCheckTime"`
 }

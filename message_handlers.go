@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -49,7 +50,7 @@ func (mp *MessageProcessor) handleRobotConnectionMessage(client mqtt.Client, msg
 	var agvStatus AGVDetailedStatus
 	if err := json.Unmarshal(msg.Payload(), &agvStatus); err == nil {
 		// Check if this looks like detailed AGV status (has required fields)
-		if agvStatus.SerialNumber != "" && agvStatus.Manufacturer != "" {
+		if agvStatus.SerialNumber != "" && agvStatus.Manufacturer != "" && len(agvStatus.ActionStates) >= 0 {
 			log.Printf("📊 AGV 상세 상태 메시지 수신 - Serial: %s", agvStatus.SerialNumber)
 			mp.handleAGVDetailedStatus(&agvStatus, serialNumber)
 			return
@@ -63,22 +64,12 @@ func (mp *MessageProcessor) handleRobotConnectionMessage(client mqtt.Client, msg
 		return
 	}
 
-	// Validate message
-	if err := validateRobotMessage(&connectionMsg); err != nil {
-		log.Printf("❌ 메시지 검증 실패: %v", err)
+	// Validate and update robot status
+	if err := mp.validateAndUpdateRobotStatus(&connectionMsg, serialNumber); err != nil {
+		log.Printf("❌ 로봇 상태 업데이트 실패: %v", err)
 		return
 	}
 
-	// Validate serial number consistency
-	if connectionMsg.SerialNumber != serialNumber {
-		log.Printf("❌ 시리얼 번호 불일치 - Topic: %s, Message: %s", serialNumber, connectionMsg.SerialNumber)
-		return
-	}
-
-	// Update robot status
-	mp.robotManager.UpdateRobotStatus(&connectionMsg)
-
-	// Log message details
 	log.Printf("✅ 로봇 상태 업데이트 완료 - Serial: %s, State: %s, HeaderID: %d",
 		connectionMsg.SerialNumber, connectionMsg.ConnectionState, connectionMsg.HeaderID)
 }
@@ -93,41 +84,44 @@ func (mp *MessageProcessor) handleAGVDetailedStatus(agvStatus *AGVDetailedStatus
 
 	// Check if this robot is in target list
 	if !mp.robotManager.IsTargetRobot(serialNumber) {
-		log.Printf("⚠️  관리 대상이 아닌 로봇 AGV 상태 무시 - Serial: %s", serialNumber)
-		return
+		return // Silently ignore non-target robots
 	}
 
 	// Update robot detailed status
 	mp.robotManager.UpdateRobotDetailedStatus(agvStatus)
 
-	// Log detailed status
-	log.Printf("📊 AGV 상세 상태 업데이트 완료 - Serial: %s", agvStatus.SerialNumber)
-	log.Printf("   - 위치: (%.2f, %.2f, %.2f°)", agvStatus.AGVPosition.X, agvStatus.AGVPosition.Y, agvStatus.AGVPosition.Theta*180/3.14159)
-	log.Printf("   - 배터리: %.1f%% (충전중: %t)", agvStatus.BatteryState.BatteryCharge, agvStatus.BatteryState.Charging)
-	log.Printf("   - 주행중: %t, 일시정지: %t", agvStatus.Driving, agvStatus.Paused)
-	log.Printf("   - 운영모드: %s", agvStatus.OperatingMode)
+	// Log essential status info
+	log.Printf("📊 AGV 상세 상태 업데이트 - Serial: %s, 배터리: %.1f%%, 주행: %t",
+		agvStatus.SerialNumber, agvStatus.BatteryState.BatteryLevel, agvStatus.Driving)
+}
 
-	if agvStatus.OrderID != "" {
-		log.Printf("   - 현재 주문: %s (업데이트: %d)", agvStatus.OrderID, agvStatus.OrderUpdateID)
+// validateAndUpdateRobotStatus validates and updates basic robot status
+func (mp *MessageProcessor) validateAndUpdateRobotStatus(msg *RobotConnectionMessage, serialNumber string) error {
+	// Validate message
+	if msg.SerialNumber == "" || msg.Manufacturer == "" || msg.Version == "" {
+		return fmt.Errorf("missing required fields in connection message")
 	}
 
-	if len(agvStatus.ActionStates) > 0 {
-		log.Printf("   - 실행 중인 액션: %d개", len(agvStatus.ActionStates))
-		for i, action := range agvStatus.ActionStates {
-			log.Printf("     %d. %s (%s)", i+1, action.ActionType, action.ActionStatus)
-		}
+	// Validate serial number consistency
+	if msg.SerialNumber != serialNumber {
+		return fmt.Errorf("serial number mismatch - Topic: %s, Message: %s", serialNumber, msg.SerialNumber)
 	}
 
-	if len(agvStatus.Errors) > 0 {
-		log.Printf("   - ⚠️  에러: %d개", len(agvStatus.Errors))
+	// Check if this robot is in target list
+	if !mp.robotManager.IsTargetRobot(serialNumber) {
+		return nil // Silently ignore non-target robots
 	}
+
+	// Update robot status
+	mp.robotManager.UpdateRobotStatus(msg)
+	return nil
 }
 
 // handleRobotFactsheetMessage processes robot factsheet response messages
 func (mp *MessageProcessor) handleRobotFactsheetMessage(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("📋 로봇 Factsheet 응답 수신 - Topic: %s", msg.Topic())
 
-	// Parse topic to get serial number and manufacturer
+	// Parse topic to get serial number
 	serialNumber, _, err := parseRobotFactsheetTopic(msg.Topic())
 	if err != nil {
 		log.Printf("❌ Factsheet 토픽 파싱 실패: %v", err)
@@ -136,18 +130,17 @@ func (mp *MessageProcessor) handleRobotFactsheetMessage(client mqtt.Client, msg 
 
 	// Check if this robot is in target list
 	if !mp.robotManager.IsTargetRobot(serialNumber) {
-		log.Printf("⚠️  관리 대상이 아닌 로봇 Factsheet 무시 - Serial: %s", serialNumber)
-		return
+		return // Silently ignore non-target robots
 	}
 
-	// Parse as factsheet response
+	// Parse factsheet response
 	var factsheetMsg FactsheetResponseMessage
 	if err := json.Unmarshal(msg.Payload(), &factsheetMsg); err != nil {
 		log.Printf("❌ Factsheet 응답 파싱 실패: %v", err)
 		return
 	}
 
-	// Validate that this is actually a factsheet response
+	// Validate factsheet response
 	if factsheetMsg.SerialNumber == "" || factsheetMsg.Version == "" {
 		log.Printf("⚠️  유효하지 않은 Factsheet 응답 - Serial: %s", serialNumber)
 		return
@@ -163,138 +156,87 @@ func (mp *MessageProcessor) handleRobotFactsheetMessage(client mqtt.Client, msg 
 	mp.robotManager.UpdateFactsheetReceived(serialNumber)
 
 	// Log factsheet details
-	log.Printf("📋 로봇 Factsheet 상세 정보 - Serial: %s", serialNumber)
-	log.Printf("   - Manufacturer: %s", factsheetMsg.Manufacturer)
-	log.Printf("   - Version: %s", factsheetMsg.Version)
-	log.Printf("   - Series: %s (%s)", factsheetMsg.TypeSpecification.SeriesName, factsheetMsg.TypeSpecification.AGVClass)
-	log.Printf("   - Max Speed: %.1f m/s", factsheetMsg.PhysicalParameters.SpeedMax)
-	log.Printf("   - Dimensions: %.1f x %.1f x %.1f m",
-		factsheetMsg.PhysicalParameters.Length,
-		factsheetMsg.PhysicalParameters.Width,
-		factsheetMsg.PhysicalParameters.HeightMax)
-	log.Printf("   - Available Actions: %d", len(factsheetMsg.ProtocolFeatures.AGVActions))
-
-	for i, action := range factsheetMsg.ProtocolFeatures.AGVActions {
-		log.Printf("     %d. %s (%d parameters)", i+1, action.ActionType, len(action.ActionParameters))
-	}
+	log.Printf("📋 Factsheet 수신 완료 - Serial: %s, Manufacturer: %s, Actions: %d개",
+		serialNumber, factsheetMsg.Manufacturer, len(factsheetMsg.ProtocolFeatures.AGVActions))
 }
 
 // handlePLCActionMessage processes PLC action messages from bridge/actions topic
 func (mp *MessageProcessor) handlePLCActionMessage(client mqtt.Client, msg mqtt.Message) {
-	log.Printf("📨 PLC 액션 메시지 수신 - Topic: %s, Payload: %s", msg.Topic(), string(msg.Payload()))
+	log.Printf("📨 PLC 액션 메시지 수신 - Payload: %s", string(msg.Payload()))
 
-	// Check if we can send to robots
+	// Check MQTT connection
 	if !mp.mqttClient.IsConnected() {
 		log.Printf("❌ MQTT 클라이언트가 연결되지 않아 액션을 전송할 수 없습니다")
 		return
 	}
 
-	// Parse PLC action message
+	// Parse and validate PLC action
 	plcAction, err := ParsePLCActionMessage(msg.Payload())
 	if err != nil {
 		log.Printf("❌ PLC 액션 메시지 파싱 실패: %v", err)
 		return
 	}
 
-	// Validate PLC action
 	if err := ValidatePLCAction(plcAction); err != nil {
 		log.Printf("❌ PLC 액션 검증 실패: %v", err)
 		return
 	}
 
-	log.Printf("🚀 PLC 액션 처리 시작 - Action: %s", plcAction.Action)
+	log.Printf("🚀 PLC 액션 처리 시작 - Action: %s, Target: %s", plcAction.Action, plcAction.SerialNumber)
 
-	// Determine target robots
-	targetRobots := mp.determineTargetRobots(plcAction)
-	if len(targetRobots) == 0 {
-		log.Printf("⚠️  액션을 전송할 온라인 로봇이 없습니다")
+	// Send action to target robot
+	if err := mp.sendActionToRobot(plcAction, plcAction.SerialNumber); err != nil {
+		log.Printf("❌ 로봇에 액션 전송 실패 - Serial: %s, Error: %v", plcAction.SerialNumber, err)
 		return
 	}
 
-	// Send action to each target robot
-	successCount := 0
-	for _, serialNumber := range targetRobots {
-		if err := mp.sendActionToRobot(plcAction, serialNumber); err != nil {
-			log.Printf("❌ 로봇에 액션 전송 실패 - Serial: %s, Error: %v", serialNumber, err)
-		} else {
-			log.Printf("✅ 로봇에 액션 전송 완료 - Serial: %s, Action: %s", serialNumber, plcAction.Action)
-			successCount++
-		}
-	}
-
-	log.Printf("📊 PLC 액션 처리 완료 - 성공: %d/%d", successCount, len(targetRobots))
-}
-
-// determineTargetRobots determines which robots should receive the action
-func (mp *MessageProcessor) determineTargetRobots(plcAction *PLCActionMessage) []string {
-	if plcAction.SerialNumber != "" {
-		// Send to specific robot
-		if mp.robotManager.IsRobotOnline(plcAction.SerialNumber) {
-			// Check if the specified robot is in target list
-			if !mp.robotManager.IsTargetRobot(plcAction.SerialNumber) {
-				log.Printf("⚠️  지정된 로봇이 관리 대상이 아닙니다 - Serial: %s", plcAction.SerialNumber)
-				return []string{}
-			}
-			return []string{plcAction.SerialNumber}
-		} else {
-			log.Printf("⚠️  지정된 로봇이 오프라인 상태입니다 - Serial: %s", plcAction.SerialNumber)
-			return []string{}
-		}
-	}
-
-	// Send to all online target robots
-	var onlineTargetRobots []string
-	for _, serial := range mp.robotManager.GetOnlineRobots() {
-		if mp.robotManager.IsTargetRobot(serial) {
-			onlineTargetRobots = append(onlineTargetRobots, serial)
-		}
-	}
-	return onlineTargetRobots
+	log.Printf("✅ 로봇에 액션 전송 완료 - Serial: %s, Action: %s", plcAction.SerialNumber, plcAction.Action)
 }
 
 // sendActionToRobot sends action to a specific robot
 func (mp *MessageProcessor) sendActionToRobot(plcAction *PLCActionMessage, serialNumber string) error {
+	// Check if robot is online and is target robot
+	if !mp.robotManager.IsTargetRobot(serialNumber) {
+		return fmt.Errorf("robot %s is not in target list", serialNumber)
+	}
+
+	if !mp.robotManager.IsRobotOnline(serialNumber) {
+		return fmt.Errorf("robot %s is not online", serialNumber)
+	}
+
 	// Convert PLC action to robot action
 	robotAction, err := mp.actionHandler.ConvertPLCActionToRobotAction(plcAction, serialNumber)
 	if err != nil {
-		return err
-	}
-
-	// Validate robot action message
-	if err := validateRobotActionMessage(robotAction); err != nil {
-		return err
+		return fmt.Errorf("action conversion failed: %w", err)
 	}
 
 	// Convert to JSON
 	payload, err := json.Marshal(robotAction)
 	if err != nil {
-		return err
+		return fmt.Errorf("JSON marshaling failed: %w", err)
 	}
 
 	// Build topic and publish
 	topic := buildRobotActionTopic(serialNumber)
 	if err := mp.mqttClient.Publish(topic, payload); err != nil {
-		return err
+		return fmt.Errorf("MQTT publish failed: %w", err)
 	}
 
-	log.Printf("📤 로봇 액션 메시지 발행 - Topic: %s, HeaderID: %d",
-		topic, robotAction.HeaderID)
-
-	// Log action details based on message type
-	if len(robotAction.Actions) > 0 {
-		log.Printf("   Action Type: %s, ActionID: %s",
-			robotAction.Actions[0].ActionType, robotAction.Actions[0].ActionID)
-	} else if len(robotAction.Nodes) > 0 {
-		log.Printf("   Order Type: OrderID: %s, Nodes: %d",
-			robotAction.OrderID, len(robotAction.Nodes))
-		for i, node := range robotAction.Nodes {
-			if len(node.Actions) > 0 {
-				log.Printf("   Node[%d] Actions: %s", i, node.Actions[0].ActionType)
-			}
-		}
-	}
+	log.Printf("📤 로봇 액션 메시지 발행 - Topic: %s, HeaderID: %d, ActionType: %s",
+		topic, robotAction.HeaderID, mp.getActionTypeForLogging(robotAction))
 
 	return nil
+}
+
+// getActionTypeForLogging extracts action type for logging purposes
+func (mp *MessageProcessor) getActionTypeForLogging(robotAction *RobotActionMessage) string {
+	if len(robotAction.Actions) > 0 {
+		return robotAction.Actions[0].ActionType
+	}
+	if len(robotAction.Nodes) > 0 && len(robotAction.Nodes[0].Actions) > 0 {
+		return robotAction.Nodes[0].Actions[0].ActionType
+	}
+	return "unknown"
 }
 
 // SendFactsheetRequest sends factsheet request to a specific robot
@@ -305,17 +247,17 @@ func (mp *MessageProcessor) SendFactsheetRequest(serialNumber string, manufactur
 	// Convert to JSON
 	payload, err := json.Marshal(factsheetRequest)
 	if err != nil {
-		return err
+		return fmt.Errorf("JSON marshaling failed: %w", err)
 	}
 
 	// Build topic and publish
 	topic := buildRobotActionTopic(serialNumber)
 	if err := mp.mqttClient.Publish(topic, payload); err != nil {
-		return err
+		return fmt.Errorf("MQTT publish failed: %w", err)
 	}
 
-	log.Printf("📤 로봇 Factsheet 요청 발행 - Topic: %s, HeaderID: %d, ActionID: %s",
-		topic, factsheetRequest.HeaderID, factsheetRequest.Actions[0].ActionID)
+	log.Printf("📤 Factsheet 요청 발행 - Topic: %s, HeaderID: %d",
+		topic, factsheetRequest.HeaderID)
 
 	return nil
 }
