@@ -81,6 +81,8 @@ func (ah *ActionHandler) ConvertPLCActionToRobotAction(plcAction *PLCActionMessa
 		return ah.createInitPositionAction(serialNumber), nil
 	case "factsheetRequest":
 		return ah.createFactsheetRequestAction(serialNumber, "Roboligent"), nil
+	case "cancelOrder":
+		return ah.createCancelOrderAction(serialNumber), nil
 	default:
 		// Check if it's an inference action (format: I:inference_name)
 		if strings.HasPrefix(plcAction.Action, "I:") {
@@ -245,6 +247,22 @@ func (ah *ActionHandler) createTrajectoryAction(serialNumber string, trajectoryN
 	return robotAction
 }
 
+// createCancelOrderAction creates a cancel order action for the robot
+func (ah *ActionHandler) createCancelOrderAction(serialNumber string) *RobotActionMessage {
+	// Create cancel order action (no parameters needed)
+	action := Action{
+		ActionType:       "cancelOrder",
+		ActionID:         ah.generateActionID(),
+		BlockingType:     "HARD",
+		ActionParameters: []ActionParameter{}, // Empty parameters
+	}
+
+	// Create robot action message (simple format)
+	robotAction := ah.createBaseRobotMessage(serialNumber, "Roboligent")
+	robotAction.Actions = []Action{action}
+	return robotAction
+}
+
 // ValidatePLCAction validates the PLC action message
 func ValidatePLCAction(plcAction *PLCActionMessage) error {
 	if plcAction.Action == "" {
@@ -253,7 +271,7 @@ func ValidatePLCAction(plcAction *PLCActionMessage) error {
 
 	// Validate known actions
 	switch plcAction.Action {
-	case "init", "factsheetRequest":
+	case "init", "factsheetRequest", "cancelOrder":
 		return nil
 	default:
 		// Check parametric actions

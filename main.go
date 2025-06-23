@@ -65,6 +65,7 @@ func main() {
 	log.Printf("      - Robot Factsheet: meili/v2/+/+/factsheet")
 	log.Printf("   📤 발행 토픽:")
 	log.Printf("      - Robot Actions: meili/v2/Roboligent/{serial}/instantActions")
+	log.Printf("      - Robot Orders: meili/v2/Roboligent/{serial}/orders")
 	log.Printf("   💡 종료하려면 Ctrl+C를 누르세요")
 
 	// Wait for shutdown signal (모든 모니터링은 bridge 내부에서 처리)

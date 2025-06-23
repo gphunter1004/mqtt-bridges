@@ -216,8 +216,15 @@ func (mp *MessageProcessor) sendActionToRobot(plcAction *PLCActionMessage, seria
 		return fmt.Errorf("JSON marshaling failed: %w", err)
 	}
 
-	// Build topic and publish
-	topic := buildRobotActionTopic(serialNumber)
+	// Determine topic based on action type
+	var topic string
+	if plcAction.Action == "cancelOrder" {
+		topic = buildRobotOrderTopic(serialNumber)
+	} else {
+		topic = buildRobotActionTopic(serialNumber)
+	}
+
+	// Publish to appropriate topic
 	if err := mp.mqttClient.Publish(topic, payload); err != nil {
 		return fmt.Errorf("MQTT publish failed: %w", err)
 	}

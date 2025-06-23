@@ -31,3 +31,8 @@ func parseRobotFactsheetTopic(topic string) (string, string, error) {
 func buildRobotActionTopic(serialNumber string) string {
 	return fmt.Sprintf("meili/v2/Roboligent/%s/instantActions", serialNumber)
 }
+
+// buildRobotOrderTopic builds a robot order topic for a given serial number
+func buildRobotOrderTopic(serialNumber string) string {
+	return fmt.Sprintf("meili/v2/Roboligent/%s/orders", serialNumber)
+}
