@@ -31,72 +31,70 @@ func (mp *MessageProcessor) GetMessageHandlers() *MessageHandlers {
 	return &MessageHandlers{
 		PLCActionHandler:       mp.handlePLCActionMessage,
 		RobotConnectionHandler: mp.handleRobotConnectionMessage,
+		RobotStateHandler:      mp.handleRobotStateMessage, // 새로운 state 핸들러 추가
 		RobotFactsheetHandler:  mp.handleRobotFactsheetMessage,
 	}
 }
 
-// handleRobotConnectionMessage processes robot connection status messages
+// handleRobotConnectionMessage processes basic robot connection status messages
 func (mp *MessageProcessor) handleRobotConnectionMessage(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("📨 로봇 연결 상태 메시지 수신 - Topic: %s", msg.Topic())
 
 	// Parse topic to get serial number
 	serialNumber, err := parseRobotConnectionTopic(msg.Topic())
 	if err != nil {
-		log.Printf("❌ 토픽 파싱 실패: %v", err)
+		log.Printf("❌ 연결 토픽 파싱 실패: %v", err)
 		return
 	}
 
-	// Try to parse as detailed AGV status first
-	var agvStatus AGVDetailedStatus
-	if err := json.Unmarshal(msg.Payload(), &agvStatus); err == nil {
-		// Check if this looks like detailed AGV status (has required fields)
-		if agvStatus.SerialNumber != "" && agvStatus.Manufacturer != "" && len(agvStatus.ActionStates) >= 0 {
-			log.Printf("📊 AGV 상세 상태 메시지 수신 - Serial: %s", agvStatus.SerialNumber)
-			mp.handleAGVDetailedStatus(&agvStatus, serialNumber)
-			return
-		}
-	}
-
-	// Fall back to parsing as simple connection message
+	// Parse as basic connection message
 	var connectionMsg RobotConnectionMessage
 	if err := json.Unmarshal(msg.Payload(), &connectionMsg); err != nil {
-		log.Printf("❌ JSON 파싱 실패 (연결 상태): %v", err)
+		log.Printf("❌ 연결 메시지 JSON 파싱 실패: %v", err)
 		return
 	}
 
 	// Validate and update robot status
-	if err := mp.validateAndUpdateRobotStatus(&connectionMsg, serialNumber); err != nil {
+	if err := mp.validateAndUpdateRobotConnectionStatus(&connectionMsg, serialNumber); err != nil {
+		log.Printf("❌ 로봇 연결 상태 업데이트 실패: %v", err)
+		return
+	}
+
+	log.Printf("✅ 로봇 연결 상태 업데이트 완료 - Serial: %s, State: %s, HeaderID: %d",
+		connectionMsg.SerialNumber, connectionMsg.ConnectionState, connectionMsg.HeaderID)
+}
+
+// handleRobotStateMessage processes detailed robot state messages
+func (mp *MessageProcessor) handleRobotStateMessage(client mqtt.Client, msg mqtt.Message) {
+	log.Printf("📊 로봇 상태 메시지 수신 - Topic: %s", msg.Topic())
+
+	// Parse topic to get serial number
+	serialNumber, err := parseRobotStateTopic(msg.Topic())
+	if err != nil {
+		log.Printf("❌ 상태 토픽 파싱 실패: %v", err)
+		return
+	}
+
+	// Parse as detailed state message
+	var stateMsg RobotStateMessage
+	if err := json.Unmarshal(msg.Payload(), &stateMsg); err != nil {
+		log.Printf("❌ 상태 메시지 JSON 파싱 실패: %v", err)
+		return
+	}
+
+	// Validate and update robot detailed status
+	if err := mp.validateAndUpdateRobotStateStatus(&stateMsg, serialNumber); err != nil {
 		log.Printf("❌ 로봇 상태 업데이트 실패: %v", err)
 		return
 	}
 
-	log.Printf("✅ 로봇 상태 업데이트 완료 - Serial: %s, State: %s, HeaderID: %d",
-		connectionMsg.SerialNumber, connectionMsg.ConnectionState, connectionMsg.HeaderID)
-}
-
-// handleAGVDetailedStatus processes detailed AGV status messages
-func (mp *MessageProcessor) handleAGVDetailedStatus(agvStatus *AGVDetailedStatus, serialNumber string) {
-	// Validate serial number consistency
-	if agvStatus.SerialNumber != serialNumber {
-		log.Printf("❌ AGV 상태 시리얼 번호 불일치 - Topic: %s, Message: %s", serialNumber, agvStatus.SerialNumber)
-		return
-	}
-
-	// Check if this robot is in target list
-	if !mp.robotManager.IsTargetRobot(serialNumber) {
-		return // Silently ignore non-target robots
-	}
-
-	// Update robot detailed status
-	mp.robotManager.UpdateRobotDetailedStatus(agvStatus)
-
 	// Log essential status info
-	log.Printf("📊 AGV 상세 상태 업데이트 - Serial: %s, 배터리: %.1f%%, 주행: %t",
-		agvStatus.SerialNumber, agvStatus.BatteryState.BatteryLevel, agvStatus.Driving)
+	log.Printf("📊 로봇 상태 업데이트 완료 - Serial: %s, 배터리: %.1f%%, 주행: %t, 주문: %s",
+		stateMsg.SerialNumber, stateMsg.BatteryState.BatteryCharge, stateMsg.Driving, stateMsg.OrderID)
 }
 
-// validateAndUpdateRobotStatus validates and updates basic robot status
-func (mp *MessageProcessor) validateAndUpdateRobotStatus(msg *RobotConnectionMessage, serialNumber string) error {
+// validateAndUpdateRobotConnectionStatus validates and updates basic robot connection status
+func (mp *MessageProcessor) validateAndUpdateRobotConnectionStatus(msg *RobotConnectionMessage, serialNumber string) error {
 	// Validate message
 	if msg.SerialNumber == "" || msg.Manufacturer == "" || msg.Version == "" {
 		return fmt.Errorf("missing required fields in connection message")
@@ -113,7 +111,29 @@ func (mp *MessageProcessor) validateAndUpdateRobotStatus(msg *RobotConnectionMes
 	}
 
 	// Update robot status
-	mp.robotManager.UpdateRobotStatus(msg)
+	mp.robotManager.UpdateRobotConnectionStatus(msg)
+	return nil
+}
+
+// validateAndUpdateRobotStateStatus validates and updates detailed robot state status
+func (mp *MessageProcessor) validateAndUpdateRobotStateStatus(msg *RobotStateMessage, serialNumber string) error {
+	// Validate message
+	if msg.SerialNumber == "" || msg.Manufacturer == "" || msg.Version == "" {
+		return fmt.Errorf("missing required fields in state message")
+	}
+
+	// Validate serial number consistency
+	if msg.SerialNumber != serialNumber {
+		return fmt.Errorf("serial number mismatch - Topic: %s, Message: %s", serialNumber, msg.SerialNumber)
+	}
+
+	// Check if this robot is in target list
+	if !mp.robotManager.IsTargetRobot(serialNumber) {
+		return nil // Silently ignore non-target robots
+	}
+
+	// Update robot detailed status
+	mp.robotManager.UpdateRobotStateStatus(msg)
 	return nil
 }
 

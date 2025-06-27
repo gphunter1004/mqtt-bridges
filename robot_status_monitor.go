@@ -119,8 +119,18 @@ func (rsm *RobotStatusMonitor) PrintStatusSummary() {
 				factsheetIcon = "📋"
 			}
 
-			log.Printf("   %s %s %s: %s",
-				statusIcon, factsheetIcon, serialNumber, robot.ConnectionState)
+			// Show data source info
+			dataSourceInfo := ""
+			if robot.HasConnectionInfo && robot.HasStateInfo {
+				dataSourceInfo = "[연결+상태]"
+			} else if robot.HasConnectionInfo {
+				dataSourceInfo = "[연결만]"
+			} else if robot.HasStateInfo {
+				dataSourceInfo = "[상태만]"
+			}
+
+			log.Printf("   %s %s %s %s: %s",
+				statusIcon, factsheetIcon, serialNumber, dataSourceInfo, robot.ConnectionState)
 
 			// Show additional info if detailed status available
 			if robot.HasDetailedInfo && robot.DetailedStatus != nil {
@@ -148,6 +158,14 @@ func (rsm *RobotStatusMonitor) PrintStatusSummary() {
 					details = append(details, fmt.Sprintf("액션 %d개", len(robot.ActiveActions)))
 				}
 
+				if robot.HasErrors {
+					details = append(details, "⚠️ 오류")
+				}
+
+				if robot.HasSafetyIssue {
+					details = append(details, "🚨 안전")
+				}
+
 				if len(details) > 0 {
 					log.Printf("     └─ %s", strings.Join(details, " | "))
 				}
@@ -168,8 +186,9 @@ func (rsm *RobotStatusMonitor) CheckBatteryLevels() {
 
 	lowBatteryCount := 0
 	for serial, battery := range batteryStatuses {
-		if battery.BatteryLevel < 20.0 && !battery.IsCharging {
-			log.Printf("   🚨 배터리 부족: %s (%.1f%%)", serial, battery.BatteryLevel)
+		// Use correct field names: BatteryCharge and Charging
+		if battery.BatteryCharge < 20.0 && !battery.Charging {
+			log.Printf("   🚨 배터리 부족: %s (%.1f%%)", serial, battery.BatteryCharge)
 			lowBatteryCount++
 		}
 	}

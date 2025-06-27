@@ -21,14 +21,13 @@ type RobotConnectionMessage struct {
 	ConnectionState ConnectionState `json:"connectionState"`
 }
 
-// AGVDetailedStatus represents detailed AGV status messages
-type AGVDetailedStatus struct {
-	HeaderID        int             `json:"headerId"`
-	Timestamp       string          `json:"timestamp"`
-	Version         string          `json:"version"`
-	Manufacturer    string          `json:"manufacturer"`
-	SerialNumber    string          `json:"serialNumber"`
-	ConnectionState ConnectionState `json:"connectionState"`
+// RobotStateMessage represents detailed robot state messages from state topic
+type RobotStateMessage struct {
+	HeaderID     int    `json:"headerId"`
+	Timestamp    string `json:"timestamp"`
+	Version      string `json:"version"`
+	Manufacturer string `json:"manufacturer"`
+	SerialNumber string `json:"serialNumber"`
 
 	// Order execution state
 	OrderID       string  `json:"orderId,omitempty"`
@@ -43,7 +42,7 @@ type AGVDetailedStatus struct {
 	// State arrays
 	ActionStates []ActionState `json:"actionStates"`
 	NodeStates   []NodeState   `json:"nodeStates"`
-	EdgeStates   []Edge        `json:"edgeStates"` // Changed from []EdgeState to []Edge
+	EdgeStates   []EdgeState   `json:"edgeStates"`
 	Errors       []ErrorInfo   `json:"errors"`
 	Information  []InfoMessage `json:"information"`
 
@@ -93,12 +92,12 @@ type AGVPosition struct {
 	DeviationRange      float64 `json:"deviationRange"`
 }
 
-// BatteryState represents robot's battery status (통합된 배터리 상태)
+// BatteryState represents robot's battery status
 type BatteryState struct {
-	BatteryLevel   float64 `json:"batteryCharge"` // JSON에서는 batteryCharge로 직렬화
+	BatteryCharge  float64 `json:"batteryCharge"` // 실제 메시지에서 사용하는 필드명
 	BatteryVoltage float64 `json:"batteryVoltage"`
 	BatteryHealth  int     `json:"batteryHealth"`
-	IsCharging     bool    `json:"charging"` // JSON에서는 charging으로 직렬화
+	Charging       bool    `json:"charging"` // 실제 메시지에서 사용하는 필드명
 	Reach          int     `json:"reach"`
 }
 
@@ -160,11 +159,17 @@ type RobotStatus struct {
 	LastNodeID     string        `json:"lastNodeId,omitempty"`
 
 	// Detailed info tracking
-	DetailedStatus  *AGVDetailedStatus `json:"detailedStatus,omitempty"`
+	DetailedStatus  *RobotStateMessage `json:"detailedStatus,omitempty"`
 	DetailedUpdate  time.Time          `json:"detailedUpdate"`
 	HasDetailedInfo bool               `json:"hasDetailedInfo"`
 	IsOnline        bool               `json:"isOnline"`
 	HasErrors       bool               `json:"hasErrors"`
+
+	// Connection vs State tracking
+	HasConnectionInfo bool      `json:"hasConnectionInfo"`
+	HasStateInfo      bool      `json:"hasStateInfo"`
+	ConnectionUpdate  time.Time `json:"connectionUpdate"`
+	StateUpdate       time.Time `json:"stateUpdate"`
 }
 
 // PLCActionMessage represents the message from PLC bridge/actions topic

@@ -38,8 +38,8 @@ func (rm *RobotManager) SetStatusChangeCallback(callback StatusChangeCallback) {
 	rm.statusChangeCallback = callback
 }
 
-// UpdateRobotStatus updates robot status from basic connection message
-func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
+// UpdateRobotConnectionStatus updates robot status from basic connection message
+func (rm *RobotManager) UpdateRobotConnectionStatus(msg *RobotConnectionMessage) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
@@ -47,7 +47,7 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 
 	// Check if this robot is in target list
 	if !rm.targetSerials[serialNumber] {
-		log.Printf("⚠️  관리 대상이 아닌 로봇 메시지 무시 - Serial: %s", serialNumber)
+		log.Printf("⚠️  관리 대상이 아닌 로봇 연결 메시지 무시 - Serial: %s", serialNumber)
 		return
 	}
 
@@ -59,12 +59,12 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 			Manufacturer: msg.Manufacturer,
 		}
 		rm.robots[serialNumber] = robot
-		log.Printf("✅ 새로운 로봇 등록 - Serial: %s", serialNumber)
+		log.Printf("✅ 새로운 로봇 등록 (연결) - Serial: %s", serialNumber)
 	}
 
 	// Check if this is a newer message
-	if robot.LastHeaderID > msg.HeaderID {
-		log.Printf("⚠️  이전 메시지 무시 - Robot: %s, Current HeaderID: %d, Received HeaderID: %d",
+	if robot.HasConnectionInfo && robot.LastHeaderID > msg.HeaderID {
+		log.Printf("⚠️  이전 연결 메시지 무시 - Robot: %s, Current HeaderID: %d, Received HeaderID: %d",
 			serialNumber, robot.LastHeaderID, msg.HeaderID)
 		return
 	}
@@ -72,14 +72,13 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 	// Store previous state for comparison
 	previousState := robot.ConnectionState
 
-	// Update basic connection info
+	// Update connection info
 	robot.ConnectionState = msg.ConnectionState
 	robot.LastUpdate = time.Now()
+	robot.ConnectionUpdate = time.Now()
 	robot.LastHeaderID = msg.HeaderID
 	robot.IsOnline = (msg.ConnectionState == Online)
-
-	// Note: Basic RobotConnectionMessage only contains connection state
-	// Detailed information (OrderID, Driving, etc.) comes from AGVDetailedStatus
+	robot.HasConnectionInfo = true
 
 	// Log state changes
 	if previousState != msg.ConnectionState {
@@ -96,16 +95,16 @@ func (rm *RobotManager) UpdateRobotStatus(msg *RobotConnectionMessage) {
 	}
 }
 
-// UpdateRobotDetailedStatus updates detailed robot status from AGV messages
-func (rm *RobotManager) UpdateRobotDetailedStatus(agvStatus *AGVDetailedStatus) {
+// UpdateRobotStateStatus updates detailed robot status from state messages
+func (rm *RobotManager) UpdateRobotStateStatus(stateMsg *RobotStateMessage) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
-	serialNumber := agvStatus.SerialNumber
+	serialNumber := stateMsg.SerialNumber
 
 	// Check if this robot is in target list
 	if !rm.targetSerials[serialNumber] {
-		log.Printf("⚠️  관리 대상이 아닌 로봇 상세 상태 무시 - Serial: %s", serialNumber)
+		log.Printf("⚠️  관리 대상이 아닌 로봇 상태 메시지 무시 - Serial: %s", serialNumber)
 		return
 	}
 
@@ -114,49 +113,61 @@ func (rm *RobotManager) UpdateRobotDetailedStatus(agvStatus *AGVDetailedStatus) 
 	if !exists {
 		robot = &RobotStatus{
 			SerialNumber: serialNumber,
-			Manufacturer: agvStatus.Manufacturer,
+			Manufacturer: stateMsg.Manufacturer,
 		}
 		rm.robots[serialNumber] = robot
-		log.Printf("✅ 새로운 로봇 등록 (상세 상태) - Serial: %s", serialNumber)
+		log.Printf("✅ 새로운 로봇 등록 (상태) - Serial: %s", serialNumber)
 	}
 
 	// Update detailed status
-	robot.DetailedStatus = agvStatus
+	robot.DetailedStatus = stateMsg
 	robot.DetailedUpdate = time.Now()
+	robot.StateUpdate = time.Now()
 	robot.HasDetailedInfo = true
-	robot.IsOnline = (agvStatus.ConnectionState == Online)
+	robot.HasStateInfo = true
 
-	// Update connection state and basic info
-	robot.ConnectionState = agvStatus.ConnectionState
-	robot.LastUpdate = time.Now()
-	robot.LastHeaderID = agvStatus.HeaderID
+	// Update basic info from state message if we don't have connection info or this is newer
+	if !robot.HasConnectionInfo || stateMsg.HeaderID > robot.LastHeaderID {
+		robot.LastUpdate = time.Now()
+		robot.LastHeaderID = stateMsg.HeaderID
+		robot.Manufacturer = stateMsg.Manufacturer
+	}
 
 	// Update order execution state from detailed status
-	robot.CurrentOrderID = agvStatus.OrderID
-	robot.OrderUpdateID = agvStatus.OrderUpdateID
-	robot.IsExecutingOrder = (agvStatus.OrderID != "")
-	robot.IsDriving = agvStatus.Driving
-	robot.IsPaused = agvStatus.Paused
-	robot.OperatingMode = agvStatus.OperatingMode
-	robot.LastNodeID = agvStatus.LastNodeID
+	robot.CurrentOrderID = stateMsg.OrderID
+	robot.OrderUpdateID = stateMsg.OrderUpdateID
+	robot.IsExecutingOrder = (stateMsg.OrderID != "")
+	robot.IsDriving = stateMsg.Driving
+	robot.IsPaused = stateMsg.Paused
+	robot.OperatingMode = stateMsg.OperatingMode
+	robot.LastNodeID = stateMsg.LastNodeID
 
 	// Update position and battery from detailed status
-	robot.CurrentPosition = &agvStatus.AGVPosition
-	robot.BatteryLevel = agvStatus.BatteryState.BatteryLevel // Changed from BatteryCharge
-	robot.IsCharging = agvStatus.BatteryState.IsCharging     // Changed from Charging
+	robot.CurrentPosition = &stateMsg.AGVPosition
+	robot.BatteryLevel = stateMsg.BatteryState.BatteryCharge // 실제 필드명 사용
+	robot.IsCharging = stateMsg.BatteryState.Charging        // 실제 필드명 사용
 
 	// Update error status
-	robot.HasErrors = len(agvStatus.Errors) > 0
-	if len(agvStatus.Errors) > 0 {
-		robot.LastError = &agvStatus.Errors[0]
+	robot.HasErrors = len(stateMsg.Errors) > 0
+	if len(stateMsg.Errors) > 0 {
+		robot.LastError = &stateMsg.Errors[0]
+	} else {
+		robot.LastError = nil
 	}
 
 	// Update safety status
-	robot.HasSafetyIssue = (agvStatus.SafetyState.EStop != "NONE" || agvStatus.SafetyState.FieldViolation)
+	robot.HasSafetyIssue = (stateMsg.SafetyState.EStop != "NONE" || stateMsg.SafetyState.FieldViolation)
 
 	// Update active actions
-	robot.ActiveActions = make([]ActionState, len(agvStatus.ActionStates))
-	copy(robot.ActiveActions, agvStatus.ActionStates)
+	robot.ActiveActions = make([]ActionState, len(stateMsg.ActionStates))
+	copy(robot.ActiveActions, stateMsg.ActionStates)
+
+	// Set order start time if this is a new order
+	if robot.IsExecutingOrder && robot.OrderStartTime.IsZero() {
+		robot.OrderStartTime = time.Now()
+	} else if !robot.IsExecutingOrder {
+		robot.OrderStartTime = time.Time{} // Reset if no order
+	}
 }
 
 // GetRobotStatus returns the current status of a robot

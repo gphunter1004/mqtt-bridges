@@ -61,6 +61,7 @@ type MQTTClient struct {
 type MessageHandlers struct {
 	PLCActionHandler       mqtt.MessageHandler
 	RobotConnectionHandler mqtt.MessageHandler
+	RobotStateHandler      mqtt.MessageHandler // 새로운 state 핸들러 추가
 	RobotFactsheetHandler  mqtt.MessageHandler
 }
 
@@ -215,6 +216,15 @@ func (mc *MQTTClient) subscribeToTopics() {
 		log.Printf("✅ 로봇 연결 상태 토픽 구독 완료: %s", connectionTopic)
 	} else {
 		log.Printf("❌ 로봇 연결 상태 토픽 구독 실패: %v", token.Error())
+	}
+
+	// Subscribe to robot state messages
+	stateTopic := "meili/v2/Roboligent/+/state"
+	token = mc.client.Subscribe(stateTopic, mc.config.QoS, mc.handlers.RobotStateHandler)
+	if token.WaitTimeout(5*time.Second) && token.Error() == nil {
+		log.Printf("✅ 로봇 상태 토픽 구독 완료: %s", stateTopic)
+	} else {
+		log.Printf("❌ 로봇 상태 토픽 구독 실패: %v", token.Error())
 	}
 
 	// Subscribe to robot factsheet responses
